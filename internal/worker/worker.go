@@ -12,25 +12,32 @@ import (
 	"gophprofile/internal/broker"
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
-	"gophprofile/internal/repository"
 	"gophprofile/internal/storage"
 	"gophprofile/pkg/retry"
 )
 
+// AvatarRepository — хранилище метаданных аватарок для воркера.
+type AvatarRepository interface {
+	GetByID(ctx context.Context, id string) (*domain.Avatar, error)
+	ClaimForProcessing(ctx context.Context, id string) (*domain.Avatar, error)
+	UpdateProcessingResult(ctx context.Context, id string, thumbs map[string]string, status string) error
+	MarkProcessingFailed(ctx context.Context, id string) error
+}
+
 // Consumer читает сообщения из очереди брокера.
 type Consumer interface {
-	Consume(ctx context.Context, queue string, handler func(broker.Message) error) error
+	Consume(ctx context.Context, queue string, handler func(context.Context, broker.Message) error) error
 }
 
 // Worker создаёт миниатюры и удаляет файлы из S3.
 type Worker struct {
-	repo     repository.AvatarRepository
+	repo     AvatarRepository
 	objects  storage.ObjectStorage
 	consumer Consumer
 }
 
 // New создаёт воркер обработки событий.
-func New(repo repository.AvatarRepository, objects storage.ObjectStorage, consumer Consumer) *Worker {
+func New(repo AvatarRepository, objects storage.ObjectStorage, consumer Consumer) *Worker {
 	return &Worker{repo: repo, objects: objects, consumer: consumer}
 }
 
@@ -53,23 +60,23 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 // handleUploaded разбирает событие загрузки и запускает обработку.
-func (w *Worker) handleUploaded(msg broker.Message) error {
+func (w *Worker) handleUploaded(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarUploadEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
 		slog.Error("invalid upload event", slog.Any("error", err))
 		return nil
 	}
-	return w.HandleUploadEvent(context.Background(), event)
+	return w.HandleUploadEvent(ctx, event)
 }
 
 // handleDeleted разбирает событие удаления и чистит S3.
-func (w *Worker) handleDeleted(msg broker.Message) error {
+func (w *Worker) handleDeleted(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarDeleteEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
 		slog.Error("invalid delete event", slog.Any("error", err))
 		return nil
 	}
-	return w.HandleDeleteEvent(context.Background(), event)
+	return w.HandleDeleteEvent(ctx, event)
 }
 
 // HandleUploadEvent идемпотентно создаёт миниатюры и обновляет статус.

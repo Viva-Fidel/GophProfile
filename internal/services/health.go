@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
-	"database/sql"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Pinger проверяет доступность зависимости.
@@ -12,13 +14,13 @@ type Pinger interface {
 
 // HealthService проверяет состояние БД, S3 и брокера.
 type HealthService struct {
-	db     *sql.DB
+	db     *pgxpool.Pool
 	s3     Pinger
 	broker Pinger
 }
 
 // NewHealthService создаёт сервис healthcheck.
-func NewHealthService(db *sql.DB, s3, broker Pinger) *HealthService {
+func NewHealthService(db *pgxpool.Pool, s3, broker Pinger) *HealthService {
 	return &HealthService{db: db, s3: s3, broker: broker}
 }
 
@@ -55,9 +57,9 @@ func (s *HealthService) Check(ctx context.Context) HealthReport {
 // pingDB проверяет соединение с PostgreSQL.
 func (s *HealthService) pingDB(ctx context.Context) error {
 	if s.db == nil {
-		return sql.ErrConnDone
+		return errors.New("postgres pool is nil")
 	}
-	return s.db.PingContext(ctx)
+	return s.db.Ping(ctx)
 }
 
 // component превращает ошибку ping в строковый статус.

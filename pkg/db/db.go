@@ -3,42 +3,43 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"log/slog"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Open открывает соединение с PostgreSQL по URI и проверяет доступность БД.
-func Open(ctx context.Context, uri string) (*sql.DB, error) {
+// Open открывает пул соединений с PostgreSQL по URI и проверяет доступность БД.
+func Open(ctx context.Context, uri string) (*pgxpool.Pool, error) {
 	if uri == "" {
 		return nil, fmt.Errorf("empty DATABASE_URI")
 	}
 
-	sqlDB, err := sql.Open("pgx", uri)
+	cfg, err := pgxpool.ParseConfig(uri)
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(10)
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	cfg.MaxConns = 10
+	cfg.MinConns = 5
+	cfg.MaxConnLifetime = time.Hour
 
-	if err := pingWithRetry(ctx, sqlDB, 10, time.Second); err != nil {
-		if closeErr := sqlDB.Close(); closeErr != nil {
-			slog.ErrorContext(ctx, "close db after ping failure", slog.Any("error", closeErr))
-		}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
-	return sqlDB, nil
+
+	if err := pingWithRetry(ctx, pool, 10, time.Second); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 // pingWithRetry проверяет доступность БД с несколькими попытками.
-func pingWithRetry(ctx context.Context, db *sql.DB, attempts int, delay time.Duration) error {
+func pingWithRetry(ctx context.Context, pool *pgxpool.Pool, attempts int, delay time.Duration) error {
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		if err := db.PingContext(ctx); err == nil {
+		if err := pool.Ping(ctx); err == nil {
 			return nil
 		} else {
 			lastErr = err

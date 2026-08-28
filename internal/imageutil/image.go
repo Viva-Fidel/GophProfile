@@ -92,11 +92,6 @@ func Convert(data []byte, format string) ([]byte, string, error) {
 			return nil, "", err
 		}
 		return buf.Bytes(), "image/png", nil
-	case "webp":
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
-			return nil, "", err
-		}
-		return buf.Bytes(), "image/jpeg", nil
 	default:
 		return nil, "", domain.ErrInvalidFormatParam
 	}

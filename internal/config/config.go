@@ -3,7 +3,9 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -30,15 +32,15 @@ type DBConfig struct {
 // S3Config описывает подключение к S3-совместимому хранилищу.
 type S3Config struct {
 	Endpoint  string `env:"S3_ENDPOINT" envDefault:"localhost:9000"`
-	AccessKey string `env:"S3_ACCESS_KEY" envDefault:"minioadmin"`
-	SecretKey string `env:"S3_SECRET_KEY" envDefault:"minioadmin"`
+	AccessKey string `env:"S3_ACCESS_KEY"`
+	SecretKey string `env:"S3_SECRET_KEY"`
 	Bucket    string `env:"S3_BUCKET" envDefault:"avatars"`
 	UseSSL    bool   `env:"S3_USE_SSL" envDefault:"false"`
 }
 
 // BrokerConfig описывает подключение к RabbitMQ.
 type BrokerConfig struct {
-	URI string `env:"RABBITMQ_URI" envDefault:"amqp://guest:guest@localhost:5672/"`
+	URI string `env:"RABBITMQ_URI"`
 }
 
 // Flags — итоговые параметры запуска сервера и воркера.
@@ -89,6 +91,26 @@ func parseFlags(conf *Config, fs *flag.FlagSet, args []string) (*Flags, error) {
 	return flags, nil
 }
 
+func validateFlags(flags *Flags) error {
+	var missing []string
+	if flags.DatabaseURI == "" {
+		missing = append(missing, "DATABASE_URI")
+	}
+	if flags.S3AccessKey == "" {
+		missing = append(missing, "S3_ACCESS_KEY")
+	}
+	if flags.S3SecretKey == "" {
+		missing = append(missing, "S3_SECRET_KEY")
+	}
+	if flags.RabbitURI == "" {
+		missing = append(missing, "RABBITMQ_URI")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("required configuration is not set: %s", strings.Join(missing, ", "))
+}
+
 // LoadFlags загружает конфигурацию из окружения и CLI-флагов.
 func LoadFlags() (*Flags, error) {
 	conf, err := loadConfig()
@@ -96,5 +118,12 @@ func LoadFlags() (*Flags, error) {
 		return nil, err
 	}
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	return parseFlags(conf, fs, os.Args[1:])
+	flags, err := parseFlags(conf, fs, os.Args[1:])
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFlags(flags); err != nil {
+		return nil, err
+	}
+	return flags, nil
 }

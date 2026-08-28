@@ -3,7 +3,6 @@ module gophprofile
 go 1.26.1
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/disintegration/imaging v1.6.2
 	github.com/go-chi/chi/v5 v5.2.2
@@ -11,6 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/minio/minio-go/v7 v7.0.95
+	github.com/pashagolub/pgxmock/v4 v4.9.0
 	github.com/rabbitmq/amqp091-go v1.10.0
 	golang.org/x/image v0.31.0
 )

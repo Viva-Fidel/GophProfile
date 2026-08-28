@@ -3,32 +3,30 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gophprofile/internal/domain"
 )
 
-// AvatarRepository — хранилище метаданных аватарок.
-type AvatarRepository interface {
-	Create(ctx context.Context, a domain.Avatar) error
-	GetByID(ctx context.Context, id string) (*domain.Avatar, error)
-	GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error)
-	ListByUserID(ctx context.Context, userID string) ([]domain.Avatar, error)
-	SoftDelete(ctx context.Context, id string) error
-	ClaimForProcessing(ctx context.Context, id string) (*domain.Avatar, error)
-	UpdateProcessingResult(ctx context.Context, id string, thumbs map[string]string, status string) error
-	MarkProcessingFailed(ctx context.Context, id string) error
+type pgPool interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// PostgresAvatarRepository реализует AvatarRepository поверх PostgreSQL.
+// PostgresAvatarRepository хранит метаданные аватарок в PostgreSQL.
 type PostgresAvatarRepository struct {
-	db *sql.DB
+	db pgPool
 }
 
 // NewPostgresAvatarRepository создаёт репозиторий аватарок.
-func NewPostgresAvatarRepository(db *sql.DB) *PostgresAvatarRepository {
+func NewPostgresAvatarRepository(db *pgxpool.Pool) *PostgresAvatarRepository {
 	return &PostgresAvatarRepository{db: db}
 }
 
@@ -38,7 +36,7 @@ func (r *PostgresAvatarRepository) Create(ctx context.Context, a domain.Avatar) 
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = r.db.Exec(ctx, `
 		INSERT INTO avatars (
 			id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status, created_at, updated_at
@@ -50,7 +48,7 @@ func (r *PostgresAvatarRepository) Create(ctx context.Context, a domain.Avatar) 
 
 // GetByID возвращает незакрытую аватарку по id.
 func (r *PostgresAvatarRepository) GetByID(ctx context.Context, id string) (*domain.Avatar, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
@@ -61,7 +59,7 @@ func (r *PostgresAvatarRepository) GetByID(ctx context.Context, id string) (*dom
 
 // GetLatestByUserID возвращает последнюю аватарку пользователя.
 func (r *PostgresAvatarRepository) GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
@@ -74,7 +72,7 @@ func (r *PostgresAvatarRepository) GetLatestByUserID(ctx context.Context, userID
 
 // ListByUserID возвращает все незакрытые аватарки пользователя.
 func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID string) ([]domain.Avatar, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
@@ -99,18 +97,14 @@ func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID stri
 
 // SoftDelete помечает аватарку удалённой.
 func (r *PostgresAvatarRepository) SoftDelete(ctx context.Context, id string) error {
-	res, err := r.db.ExecContext(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE avatars SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
 	return nil
@@ -119,7 +113,7 @@ func (r *PostgresAvatarRepository) SoftDelete(ctx context.Context, id string) er
 // ClaimForProcessing атомарно берёт аватарку в обработку.
 // Если обработка уже завершена, возвращает существующую запись без ошибки.
 func (r *PostgresAvatarRepository) ClaimForProcessing(ctx context.Context, id string) (*domain.Avatar, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.db.QueryRow(ctx, `
 		UPDATE avatars
 		SET processing_status = $2, updated_at = NOW()
 		WHERE id = $1 AND deleted_at IS NULL AND processing_status IN ($3, $4, $5)
@@ -143,7 +137,7 @@ func (r *PostgresAvatarRepository) ClaimForProcessing(ctx context.Context, id st
 
 // GetByIDIncludingDeleted возвращает аватарку без фильтра по deleted_at.
 func (r *PostgresAvatarRepository) GetByIDIncludingDeleted(ctx context.Context, id string) (*domain.Avatar, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
@@ -158,7 +152,7 @@ func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, i
 	if err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE avatars
 		SET thumbnail_s3_keys = $2, processing_status = $3, updated_at = NOW()
 		WHERE id = $1
@@ -166,11 +160,7 @@ func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, i
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
+	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
 	return nil
@@ -178,7 +168,7 @@ func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, i
 
 // MarkProcessingFailed помечает обработку как неуспешную.
 func (r *PostgresAvatarRepository) MarkProcessingFailed(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.db.Exec(ctx, `
 		UPDATE avatars SET processing_status = $2, updated_at = NOW() WHERE id = $1
 	`, id, domain.ProcessingFailed)
 	return err
@@ -192,13 +182,13 @@ type rowScanner interface {
 func scanAvatar(row rowScanner) (*domain.Avatar, error) {
 	var a domain.Avatar
 	var thumbs []byte
-	var deletedAt sql.NullTime
+	var deletedAt *time.Time
 	err := row.Scan(
 		&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height,
 		&a.S3Key, &thumbs, &a.UploadStatus, &a.ProcessingStatus,
 		&a.CreatedAt, &a.UpdatedAt, &deletedAt,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
 	if err != nil {
@@ -208,10 +198,7 @@ func scanAvatar(row rowScanner) (*domain.Avatar, error) {
 	if err != nil {
 		return nil, err
 	}
-	if deletedAt.Valid {
-		t := deletedAt.Time
-		a.DeletedAt = &t
-	}
+	a.DeletedAt = deletedAt
 	return &a, nil
 }
 

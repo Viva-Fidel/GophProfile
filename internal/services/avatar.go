@@ -17,21 +17,29 @@ import (
 	"gophprofile/internal/broker"
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
-	"gophprofile/internal/repository"
 	"gophprofile/internal/storage"
 	"gophprofile/pkg/retry"
 )
 
+// AvatarRepository — хранилище метаданных аватарок для сервиса.
+type AvatarRepository interface {
+	Create(ctx context.Context, a domain.Avatar) error
+	GetByID(ctx context.Context, id string) (*domain.Avatar, error)
+	GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error)
+	ListByUserID(ctx context.Context, userID string) ([]domain.Avatar, error)
+	SoftDelete(ctx context.Context, id string) error
+}
+
 // AvatarService оркестрирует валидацию, S3, БД и события брокера.
 type AvatarService struct {
-	repo      repository.AvatarRepository
+	repo      AvatarRepository
 	objects   storage.ObjectStorage
 	publisher broker.Publisher
 	publicURL string
 }
 
 // NewAvatarService создаёт сервис аватарок.
-func NewAvatarService(repo repository.AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string) *AvatarService {
+func NewAvatarService(repo AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string) *AvatarService {
 	return &AvatarService{
 		repo:      repo,
 		objects:   objects,

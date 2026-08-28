@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,16 +15,28 @@ import (
 
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
-	"gophprofile/internal/services"
 )
+
+// AvatarService — контракт сервиса аватарок для HTTP-обработчика.
+type AvatarService interface {
+	Upload(ctx context.Context, userID, fileName string, data []byte) (*domain.Avatar, error)
+	Get(ctx context.Context, id string) (*domain.Avatar, error)
+	GetLatestByUser(ctx context.Context, userID string) (*domain.Avatar, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.Avatar, error)
+	File(ctx context.Context, avatar *domain.Avatar, size, format string) (data []byte, contentType, etag string, err error)
+	Delete(ctx context.Context, actorUserID, avatarID string) error
+	DeleteUserAvatar(ctx context.Context, actorUserID, userID string) error
+	AvatarURL(id string) string
+	ThumbnailURL(id, size string) string
+}
 
 // AvatarHandler обрабатывает HTTP-запросы аватарок.
 type AvatarHandler struct {
-	svc *services.AvatarService
+	svc AvatarService
 }
 
 // NewAvatarHandler создаёт HTTP-обработчик аватарок.
-func NewAvatarHandler(svc *services.AvatarService) *AvatarHandler {
+func NewAvatarHandler(svc AvatarService) *AvatarHandler {
 	return &AvatarHandler{svc: svc}
 }
 
@@ -180,7 +193,7 @@ func (h *AvatarHandler) writeServiceError(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, domain.ErrInvalidSize):
 		writeJSON(w, http.StatusBadRequest, errorBody("Invalid size", `Supported sizes: "100x100", "300x300", "original"`))
 	case errors.Is(err, domain.ErrInvalidFormatParam):
-		writeJSON(w, http.StatusBadRequest, errorBody("Invalid format", `Supported formats: jpeg, png, webp`))
+		writeJSON(w, http.StatusBadRequest, errorBody("Invalid format", `Supported formats: jpeg, png`))
 	default:
 		slog.ErrorContext(r.Context(), "avatar handler", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, errorBody("Internal server error", ""))
@@ -250,7 +263,7 @@ func toUploadResponse(a *domain.Avatar, url string) UploadResponse {
 }
 
 // toMetadata преобразует Avatar в ответ метаданных.
-func toMetadata(a *domain.Avatar, svc *services.AvatarService) MetadataResponse {
+func toMetadata(a *domain.Avatar, svc AvatarService) MetadataResponse {
 	thumbs := make([]ThumbnailDTO, 0, len(a.ThumbnailS3Keys))
 	for _, size := range []string{domain.Size100, domain.Size300} {
 		if _, ok := a.ThumbnailKey(size); ok {

@@ -77,9 +77,8 @@ func TestConvert(t *testing.T) {
 	if err != nil || mime != "image/png" {
 		t.Fatal(err, mime)
 	}
-	data, mime, err = Convert(src, "webp")
-	if err != nil || mime != "image/jpeg" {
-		t.Fatal(err, mime)
+	if _, _, err := Convert(src, "webp"); err != domain.ErrInvalidFormatParam {
+		t.Fatal(err)
 	}
 	if _, _, err := Convert(src, "gif"); err != domain.ErrInvalidFormatParam {
 		t.Fatal(err)

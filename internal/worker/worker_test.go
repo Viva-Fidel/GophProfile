@@ -81,16 +81,19 @@ func (s *memStore) Delete(_ context.Context, keys []string) error {
 }
 func (s *memStore) Ping(context.Context) error { return nil }
 
-func pngBytes() []byte {
+func pngBytes(t *testing.T) []byte {
+	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	img.Set(0, 0, color.RGBA{9, 8, 7, 255})
 	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
 	return buf.Bytes()
 }
 
 func TestHandleUploadEvent(t *testing.T) {
-	data := pngBytes()
+	data := pngBytes(t)
 	repo := &memRepo{items: map[string]domain.Avatar{
 		"id1": {
 			ID: "id1", UserID: "u1", S3Key: "orig", ProcessingStatus: domain.ProcessingPending,
@@ -144,16 +147,16 @@ func TestHandleDeleteEvent(t *testing.T) {
 
 type stubConsumer struct{}
 
-func (stubConsumer) Consume(context.Context, string, func(broker.Message) error) error {
+func (stubConsumer) Consume(context.Context, string, func(context.Context, broker.Message) error) error {
 	return errors.New("stop")
 }
 
 func TestHandleUploadedInvalidJSON(t *testing.T) {
 	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, nil)
-	if err := w.handleUploaded(broker.Message{Body: []byte("not-json")}); err != nil {
+	if err := w.handleUploaded(context.Background(), broker.Message{Body: []byte("not-json")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.handleDeleted(broker.Message{Body: []byte("not-json")}); err != nil {
+	if err := w.handleDeleted(context.Background(), broker.Message{Body: []byte("not-json")}); err != nil {
 		t.Fatal(err)
 	}
 }

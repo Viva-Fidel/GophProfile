@@ -44,11 +44,7 @@ func run(ctx context.Context, conf *config.Flags) error {
 	if err != nil {
 		return fmt.Errorf("db open: %w", err)
 	}
-	defer func() {
-		if err := database.Close(); err != nil {
-			slog.Error("db close", slog.Any("error", err))
-		}
-	}()
+	defer database.Close()
 
 	s3, err := storage.NewS3(conf.S3Endpoint, conf.S3AccessKey, conf.S3SecretKey, conf.S3Bucket, conf.S3UseSSL)
 	if err != nil {

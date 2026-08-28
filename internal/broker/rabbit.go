@@ -96,7 +96,7 @@ func (r *Rabbit) Publish(ctx context.Context, routingKey, messageID string, body
 }
 
 // Consume читает очередь в отдельном канале и передаёт сообщения handler.
-func (r *Rabbit) Consume(ctx context.Context, queue string, handler func(Message) error) error {
+func (r *Rabbit) Consume(ctx context.Context, queue string, handler func(context.Context, Message) error) error {
 	ch, err := r.conn.Channel()
 	if err != nil {
 		return err
@@ -123,7 +123,7 @@ func (r *Rabbit) Consume(ctx context.Context, queue string, handler func(Message
 				Ack:  func() error { return d.Ack(false) },
 				Nack: func(requeue bool) error { return d.Nack(false, requeue) },
 			}
-			if err := handler(msg); err != nil {
+			if err := handler(ctx, msg); err != nil {
 				_ = msg.Nack(true)
 				continue
 			}
