@@ -1,0 +1,15 @@
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+.idea
+.vscode
+bin/
+.env
+*.db
+cover.out
+coverage.html
