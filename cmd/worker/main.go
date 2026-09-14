@@ -12,6 +12,8 @@ import (
 
 	"gophprofile/internal/broker"
 	"gophprofile/internal/config"
+	"gophprofile/internal/domain"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/repository"
 	"gophprofile/internal/storage"
 	"gophprofile/internal/worker"
@@ -21,25 +23,46 @@ import (
 
 // main загружает конфигурацию, обрабатывает сигналы ОС и запускает воркер.
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
-
 	conf, err := config.LoadFlags()
 	if err != nil {
 		slog.Error("failed to load config", slog.Any("error", err))
 		os.Exit(1)
 	}
 
+	serviceName := conf.ServiceName
+	if serviceName == "gophprofile" {
+		serviceName = "gophprofile-worker"
+	}
+	observability.SetupLogger(serviceName, conf.LogLevel)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, conf); err != nil && err != context.Canceled {
+	if err := run(ctx, conf, serviceName); err != nil && err != context.Canceled {
 		slog.Error("worker stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
 
 // run подключается к БД, S3 и брокеру и запускает обработку очередей.
-func run(ctx context.Context, conf *config.Flags) error {
+func run(ctx context.Context, conf *config.Flags, serviceName string) error {
+	otelProvider, err := observability.Setup(ctx, observability.Config{
+		ServiceName:  serviceName,
+		OTLPEndpoint: conf.OTLPEndpoint,
+		OTLPInsecure: conf.OTLPInsecure,
+		Enabled:      conf.TracingEnabled,
+	})
+	if err != nil {
+		return fmt.Errorf("otel setup: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
+			slog.Error("otel shutdown", slog.Any("error", err))
+		}
+	}()
+
 	database, err := db.Open(ctx, conf.DatabaseURI)
 	if err != nil {
 		return fmt.Errorf("db open: %w", err)
@@ -70,8 +93,22 @@ func run(ctx context.Context, conf *config.Flags) error {
 		}
 	}()
 
+	if err := observability.StartMetricsServer(ctx, conf.MetricsAddress); err != nil {
+		return fmt.Errorf("metrics server: %w", err)
+	}
+
+	observability.StartInfraCollector(
+		ctx,
+		15*time.Second,
+		observability.PgxPoolStats{Pool: database},
+		rabbit,
+		domain.QueueUploaded,
+		domain.QueueDeleted,
+		domain.QueueProcess,
+	)
+
 	repo := repository.NewPostgresAvatarRepository(database)
 	w := worker.New(repo, s3, rabbit)
-	slog.Info("gophprofile worker started")
+	slog.Info("gophprofile worker started", "metrics_addr", conf.MetricsAddress)
 	return w.Run(ctx)
 }

@@ -14,8 +14,10 @@ import (
 
 	"gophprofile/internal/broker"
 	"gophprofile/internal/config"
+	"gophprofile/internal/domain"
 	"gophprofile/internal/handlers"
 	"gophprofile/internal/httpserver"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/repository"
 	"gophprofile/internal/services"
 	"gophprofile/internal/storage"
@@ -25,13 +27,13 @@ import (
 
 // main загружает конфигурацию, обрабатывает сигналы ОС и запускает HTTP-сервер.
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
-
 	conf, err := config.LoadFlags()
 	if err != nil {
 		slog.Error("failed to load config", slog.Any("error", err))
 		os.Exit(1)
 	}
+
+	observability.SetupLogger(conf.ServiceName, conf.LogLevel)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -45,6 +47,23 @@ func main() {
 // run подключается к БД, S3 и брокеру, поднимает HTTP API
 // и блокируется до отмены ctx либо ошибки Serve.
 func run(ctx context.Context, conf *config.Flags) error {
+	otelProvider, err := observability.Setup(ctx, observability.Config{
+		ServiceName:  conf.ServiceName,
+		OTLPEndpoint: conf.OTLPEndpoint,
+		OTLPInsecure: conf.OTLPInsecure,
+		Enabled:      conf.TracingEnabled,
+	})
+	if err != nil {
+		return fmt.Errorf("otel setup: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
+			slog.Error("otel shutdown", slog.Any("error", err))
+		}
+	}()
+
 	if err := db.RunMigrations(ctx, conf.DatabaseURI, "migrations"); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
@@ -78,6 +97,16 @@ func run(ctx context.Context, conf *config.Flags) error {
 			slog.Error("rabbitmq close", slog.Any("error", err))
 		}
 	}()
+
+	observability.StartInfraCollector(
+		ctx,
+		15*time.Second,
+		observability.PgxPoolStats{Pool: database},
+		rabbit,
+		domain.QueueUploaded,
+		domain.QueueDeleted,
+		domain.QueueProcess,
+	)
 
 	repo := repository.NewPostgresAvatarRepository(database)
 	avatarSvc := services.NewAvatarService(repo, s3, rabbit, conf.PublicURL)

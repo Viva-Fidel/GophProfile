@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"gophprofile/internal/handlers"
+	"gophprofile/internal/observability"
 )
 
 // Server — HTTP API и раздача веб-интерфейса.
@@ -44,12 +45,21 @@ func (rw *responseWriter) statusCode() int {
 	return rw.status
 }
 
+// Unwrap позволяет http.ResponseController достучаться до Flush/Hijack.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // Router возвращает корневой HTTP-handler.
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.Recoverer)
+	r.Use(observability.HTTPMiddleware("gophprofile-http"))
 	r.Use(s.logging)
 
+	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		observability.MetricsHandler().ServeHTTP(w, r)
+	})
 	r.Get("/health", s.health.Get)
 
 	r.Route("/api/v1", func(r chi.Router) {
