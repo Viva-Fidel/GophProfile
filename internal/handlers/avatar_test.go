@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"gophprofile/internal/domain"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/services"
 )
 
@@ -112,8 +115,8 @@ func pngBytes(t *testing.T) []byte {
 
 func newMux(t *testing.T) (*chi.Mux, *services.AvatarService) {
 	t.Helper()
-	svc := services.NewAvatarService(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, memPub{}, "http://localhost:8080")
-	h := NewAvatarHandler(svc)
+	svc := services.NewAvatarService(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, memPub{}, "http://localhost:8080", slog.New(slog.DiscardHandler), observability.NewMetrics(prometheus.NewRegistry()))
+	h := NewAvatarHandler(svc, slog.New(slog.DiscardHandler))
 	r := chi.NewRouter()
 	r.Post("/api/v1/avatars", h.Upload)
 	r.Get("/api/v1/avatars/{avatar_id}", h.Get)

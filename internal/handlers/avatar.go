@@ -32,12 +32,13 @@ type AvatarService interface {
 
 // AvatarHandler обрабатывает HTTP-запросы аватарок.
 type AvatarHandler struct {
-	svc AvatarService
+	svc    AvatarService
+	logger *slog.Logger
 }
 
 // NewAvatarHandler создаёт HTTP-обработчик аватарок.
-func NewAvatarHandler(svc AvatarService) *AvatarHandler {
-	return &AvatarHandler{svc: svc}
+func NewAvatarHandler(svc AvatarService, logger *slog.Logger) *AvatarHandler {
+	return &AvatarHandler{svc: svc, logger: logger}
 }
 
 // Upload принимает multipart-файл и создаёт аватарку.
@@ -195,7 +196,7 @@ func (h *AvatarHandler) writeServiceError(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, domain.ErrInvalidFormatParam):
 		writeJSON(w, http.StatusBadRequest, errorBody("Invalid format", `Supported formats: jpeg, png`))
 	default:
-		slog.ErrorContext(r.Context(), "avatar handler", slog.Any("error", err))
+		h.logger.ErrorContext(r.Context(), "avatar handler", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, errorBody("Internal server error", ""))
 	}
 }

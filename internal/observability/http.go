@@ -34,7 +34,7 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 }
 
 // HTTPMiddleware добавляет OTel-спаны и Prometheus RED-метрики.
-func HTTPMiddleware(operation string) func(http.Handler) http.Handler {
+func HTTPMiddleware(operation string, metrics *Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		otelHandler := otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -46,7 +46,7 @@ func HTTPMiddleware(operation string) func(http.Handler) http.Handler {
 				routePattern = r.URL.Path
 			}
 			status := rec.statusCode()
-			ObserveHTTP(r.Method, routePattern, status, time.Since(start))
+			metrics.ObserveHTTP(r.Method, routePattern, status, time.Since(start))
 
 			span := trace.SpanFromContext(r.Context())
 			span.SetAttributes(

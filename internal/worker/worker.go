@@ -42,11 +42,13 @@ type Worker struct {
 	repo     AvatarRepository
 	objects  storage.ObjectStorage
 	consumer Consumer
+	logger   *slog.Logger
+	metrics  *observability.Metrics
 }
 
 // New создаёт воркер обработки событий.
-func New(repo AvatarRepository, objects storage.ObjectStorage, consumer Consumer) *Worker {
-	return &Worker{repo: repo, objects: objects, consumer: consumer}
+func New(repo AvatarRepository, objects storage.ObjectStorage, consumer Consumer, logger *slog.Logger, metrics *observability.Metrics) *Worker {
+	return &Worker{repo: repo, objects: objects, consumer: consumer, logger: logger, metrics: metrics}
 }
 
 // Run подписывается на очереди загрузки и удаления до отмены ctx.
@@ -71,7 +73,7 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) handleUploaded(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarUploadEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		slog.ErrorContext(ctx, "invalid upload event", slog.Any("error", err))
+		w.logger.ErrorContext(ctx, "invalid upload event", slog.Any("error", err))
 		return nil
 	}
 	return w.HandleUploadEvent(ctx, event)
@@ -81,7 +83,7 @@ func (w *Worker) handleUploaded(ctx context.Context, msg broker.Message) error {
 func (w *Worker) handleDeleted(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarDeleteEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		slog.ErrorContext(ctx, "invalid delete event", slog.Any("error", err))
+		w.logger.ErrorContext(ctx, "invalid delete event", slog.Any("error", err))
 		return nil
 	}
 	return w.HandleDeleteEvent(ctx, event)
@@ -99,7 +101,7 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 	)
 	defer span.End()
 
-	slog.InfoContext(ctx, "processing avatar upload",
+	w.logger.InfoContext(ctx, "processing avatar upload",
 		"avatar_id", event.AvatarID,
 		"user_id", event.UserID,
 	)
@@ -107,28 +109,28 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 	existing, err := w.repo.GetByID(ctx, event.AvatarID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			observability.ObserveProcessing("skipped", time.Since(start))
+			w.metrics.ObserveProcessing("skipped", time.Since(start))
 			return nil
 		}
-		observability.ObserveProcessing("error", time.Since(start))
+		w.metrics.ObserveProcessing("error", time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if existing.ProcessingStatus == domain.ProcessingCompleted {
-		observability.ObserveProcessing("skipped", time.Since(start))
+		w.metrics.ObserveProcessing("skipped", time.Since(start))
 		return nil
 	}
 
 	claimed, err := w.repo.ClaimForProcessing(ctx, event.AvatarID)
 	if err != nil {
-		observability.ObserveProcessing("error", time.Since(start))
+		w.metrics.ObserveProcessing("error", time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if claimed.ProcessingStatus == domain.ProcessingCompleted {
-		observability.ObserveProcessing("skipped", time.Since(start))
+		w.metrics.ObserveProcessing("skipped", time.Since(start))
 		return nil
 	}
 
@@ -142,7 +144,7 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 		return nil
 	}); err != nil {
 		_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
-		observability.ObserveProcessing("error", time.Since(start))
+		w.metrics.ObserveProcessing("error", time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -160,7 +162,7 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 		resized, err := imageutil.Resize(original, size.w, size.h)
 		if err != nil {
 			_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
-			observability.ObserveProcessing("error", time.Since(start))
+			w.metrics.ObserveProcessing("error", time.Since(start))
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -170,7 +172,7 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 			return w.objects.Upload(ctx, key, resized, "image/jpeg")
 		}); err != nil {
 			_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
-			observability.ObserveProcessing("error", time.Since(start))
+			w.metrics.ObserveProcessing("error", time.Since(start))
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return err
@@ -179,13 +181,13 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 	}
 
 	if err := w.repo.UpdateProcessingResult(ctx, event.AvatarID, thumbs, domain.ProcessingCompleted); err != nil {
-		observability.ObserveProcessing("error", time.Since(start))
+		w.metrics.ObserveProcessing("error", time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	observability.ObserveProcessing("success", time.Since(start))
-	slog.InfoContext(ctx, "avatar processing completed", "avatar_id", event.AvatarID)
+	w.metrics.ObserveProcessing("success", time.Since(start))
+	w.logger.InfoContext(ctx, "avatar processing completed", "avatar_id", event.AvatarID)
 	return nil
 }
 
@@ -207,6 +209,6 @@ func (w *Worker) HandleDeleteEvent(ctx context.Context, event domain.AvatarDelet
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
-	slog.InfoContext(ctx, "avatar objects deleted", "avatar_id", event.AvatarID)
+	w.logger.InfoContext(ctx, "avatar objects deleted", "avatar_id", event.AvatarID)
 	return nil
 }

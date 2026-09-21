@@ -33,20 +33,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	observability.SetupLogger(conf.ServiceName, conf.LogLevel)
+	logger := observability.SetupLogger(conf.ServiceName, conf.LogLevel)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, conf); err != nil {
-		slog.Error("server stopped with error", slog.Any("error", err))
+	if err := run(ctx, conf, logger); err != nil {
+		logger.Error("server stopped with error", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
 
 // run подключается к БД, S3 и брокеру, поднимает HTTP API
 // и блокируется до отмены ctx либо ошибки Serve.
-func run(ctx context.Context, conf *config.Flags) error {
+func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 	otelProvider, err := observability.Setup(ctx, observability.Config{
 		ServiceName:  conf.ServiceName,
 		OTLPEndpoint: conf.OTLPEndpoint,
@@ -60,7 +60,7 @@ func run(ctx context.Context, conf *config.Flags) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
-			slog.Error("otel shutdown", slog.Any("error", err))
+			logger.Error("otel shutdown", slog.Any("error", err))
 		}
 	}()
 
@@ -94,13 +94,16 @@ func run(ctx context.Context, conf *config.Flags) error {
 	}
 	defer func() {
 		if err := rabbit.Close(); err != nil {
-			slog.Error("rabbitmq close", slog.Any("error", err))
+			logger.Error("rabbitmq close", slog.Any("error", err))
 		}
 	}()
+
+	metrics := observability.NewMetrics(nil)
 
 	observability.StartInfraCollector(
 		ctx,
 		15*time.Second,
+		metrics,
 		observability.PgxPoolStats{Pool: database},
 		rabbit,
 		domain.QueueUploaded,
@@ -109,13 +112,15 @@ func run(ctx context.Context, conf *config.Flags) error {
 	)
 
 	repo := repository.NewPostgresAvatarRepository(database)
-	avatarSvc := services.NewAvatarService(repo, s3, rabbit, conf.PublicURL)
+	avatarSvc := services.NewAvatarService(repo, s3, rabbit, conf.PublicURL, logger.With("component", "avatar-service"), metrics)
 	healthSvc := services.NewHealthService(database, s3, rabbit)
 
 	handler := httpserver.New(
-		handlers.NewAvatarHandler(avatarSvc),
+		handlers.NewAvatarHandler(avatarSvc, logger.With("component", "avatar-handler")),
 		handlers.NewHealthHandler(healthSvc),
 		"web",
+		logger.With("component", "httpserver"),
+		metrics,
 	).Router()
 
 	ln, err := net.Listen("tcp", conf.RunAddress)
@@ -137,7 +142,7 @@ func run(ctx context.Context, conf *config.Flags) error {
 		errCh <- nil
 	}()
 
-	slog.Info("gophprofile started", slog.String("addr", ln.Addr().String()))
+	logger.Info("gophprofile started", slog.String("addr", ln.Addr().String()))
 
 	select {
 	case <-ctx.Done():
@@ -147,7 +152,7 @@ func run(ctx context.Context, conf *config.Flags) error {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
 		<-errCh
-		slog.Info("gophprofile stopped")
+		logger.Info("gophprofile stopped")
 		return nil
 	case err := <-errCh:
 		if err != nil {

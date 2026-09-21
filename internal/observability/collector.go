@@ -2,7 +2,6 @@ package observability
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -28,7 +27,7 @@ func (p PgxPoolStats) Stat() PoolStat {
 }
 
 // StartInfraCollector периодически обновляет инфраструктурные метрики.
-func StartInfraCollector(ctx context.Context, interval time.Duration, pool PoolStats, queues QueueDepthSource, queueNames ...string) {
+func StartInfraCollector(ctx context.Context, interval time.Duration, metrics *Metrics, pool PoolStats, queues QueueDepthSource, queueNames ...string) {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
@@ -36,8 +35,8 @@ func StartInfraCollector(ctx context.Context, interval time.Duration, pool PoolS
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		collect := func() {
-			CollectDBStats(pool)
-			CollectQueueDepth(ctx, queues, queueNames...)
+			metrics.CollectDBStats(pool)
+			metrics.CollectQueueDepth(ctx, queues, queueNames...)
 		}
 		collect()
 		for {
@@ -51,33 +50,14 @@ func StartInfraCollector(ctx context.Context, interval time.Duration, pool PoolS
 	}()
 }
 
-// StartMetricsServer поднимает отдельный HTTP endpoint /metrics.
-func StartMetricsServer(ctx context.Context, addr string) error {
+// NewMetricsServer создаёт HTTP-сервер с endpoint /metrics.
+// Жизненный цикл (ListenAndServe / Shutdown) управляется вызывающим кодом.
+func NewMetricsServer(addr string, metrics *Metrics) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", MetricsHandler())
-	srv := &http.Server{
+	mux.Handle("/metrics", metrics.Handler())
+	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-	}
-	errCh := make(chan error, 1)
-	go func() {
-		slog.Info("metrics server listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-		close(errCh)
-	}()
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-	select {
-	case err := <-errCh:
-		return err
-	case <-time.After(100 * time.Millisecond):
-		return nil
 	}
 }

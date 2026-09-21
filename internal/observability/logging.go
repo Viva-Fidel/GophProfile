@@ -15,9 +15,7 @@ func SetupLogger(serviceName, level string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(level)}
 	base := slog.NewJSONHandler(os.Stdout, opts)
 	handler := &traceHandler{next: base, service: serviceName}
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-	return logger
+	return slog.New(handler)
 }
 
 func parseLevel(level string) slog.Level {

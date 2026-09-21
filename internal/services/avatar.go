@@ -43,15 +43,19 @@ type AvatarService struct {
 	objects   storage.ObjectStorage
 	publisher broker.Publisher
 	publicURL string
+	logger    *slog.Logger
+	metrics   *observability.Metrics
 }
 
 // NewAvatarService создаёт сервис аватарок.
-func NewAvatarService(repo AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string) *AvatarService {
+func NewAvatarService(repo AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string, logger *slog.Logger, metrics *observability.Metrics) *AvatarService {
 	return &AvatarService{
 		repo:      repo,
 		objects:   objects,
 		publisher: publisher,
 		publicURL: strings.TrimRight(publicURL, "/"),
+		logger:    logger,
+		metrics:   metrics,
 	}
 }
 
@@ -67,7 +71,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	)
 	defer span.End()
 
-	logger := slog.With(
+	logger := s.logger.With(
 		"user_id", userID,
 		"file_name", fileName,
 		"file_size", len(data),
@@ -75,24 +79,24 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	logger.InfoContext(ctx, "uploading avatar")
 
 	if userID == "" {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.SetStatus(codes.Error, "missing user")
 		return nil, domain.ErrMissingUser
 	}
 	if len(data) == 0 {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.SetStatus(codes.Error, "missing file")
 		return nil, domain.ErrMissingFile
 	}
 	if int64(len(data)) > domain.MaxUploadBytes {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.SetStatus(codes.Error, "too large")
 		return nil, domain.ErrTooLarge
 	}
 
 	mime, width, height, err := imageutil.Detect(data)
 	if err != nil {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -104,7 +108,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	s3Key := fmt.Sprintf("originals/%s/%s/%s", userID, id, sanitizeFileName(fileName))
 
 	if err := s.objects.Upload(ctx, s3Key, data, mime); err != nil {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -126,7 +130,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 		UpdatedAt:        now,
 	}
 	if err := s.repo.Create(ctx, avatar); err != nil {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -135,7 +139,7 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	event := domain.AvatarUploadEvent{AvatarID: id, UserID: userID, S3Key: s3Key}
 	body, err := json.Marshal(event)
 	if err != nil {
-		observability.ObserveUpload("error", 0, time.Since(start))
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -143,10 +147,10 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 	if err := retry.Do(ctx, 3, 200*time.Millisecond, func() error {
 		return s.publisher.Publish(ctx, domain.RoutingUploaded, "upload:"+id, body)
 	}); err != nil {
-		slog.ErrorContext(ctx, "publish upload event", slog.String("avatar_id", id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "publish upload event", slog.String("avatar_id", id), slog.Any("error", err))
 	}
 
-	observability.ObserveUpload("success", avatar.SizeBytes, time.Since(start))
+	s.metrics.ObserveUpload("success", avatar.SizeBytes, time.Since(start))
 	logger.InfoContext(ctx, "avatar uploaded", "avatar_id", id, "mime_type", mime)
 	return &avatar, nil
 }
@@ -251,18 +255,18 @@ func (s *AvatarService) Delete(ctx context.Context, actorUserID, avatarID string
 	defer span.End()
 
 	if actorUserID == "" {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrMissingUser
 	}
 	avatar, err := s.repo.GetByID(ctx, avatarID)
 	if err != nil {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if avatar.UserID != actorUserID {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrForbidden
 	}
 	return s.softDeleteAndPublish(ctx, avatar)
@@ -279,16 +283,16 @@ func (s *AvatarService) DeleteUserAvatar(ctx context.Context, actorUserID, userI
 	defer span.End()
 
 	if actorUserID == "" {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrMissingUser
 	}
 	if actorUserID != userID {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrForbidden
 	}
 	avatar, err := s.repo.GetLatestByUserID(ctx, userID)
 	if err != nil {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -309,7 +313,7 @@ func (s *AvatarService) ThumbnailURL(id, size string) string {
 // softDeleteAndPublish помечает запись удалённой и публикует событие очистки S3.
 func (s *AvatarService) softDeleteAndPublish(ctx context.Context, avatar *domain.Avatar) error {
 	if err := s.repo.SoftDelete(ctx, avatar.ID); err != nil {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return err
 	}
 	keys := []string{avatar.S3Key}
@@ -321,16 +325,16 @@ func (s *AvatarService) softDeleteAndPublish(ctx context.Context, avatar *domain
 	event := domain.AvatarDeleteEvent{AvatarID: avatar.ID, S3Keys: keys}
 	body, err := json.Marshal(event)
 	if err != nil {
-		observability.ObserveDelete("error", 0)
+		s.metrics.ObserveDelete("error", 0)
 		return err
 	}
 	if err := retry.Do(ctx, 3, 200*time.Millisecond, func() error {
 		return s.publisher.Publish(ctx, domain.RoutingDeleted, "delete:"+avatar.ID, body)
 	}); err != nil {
-		slog.ErrorContext(ctx, "publish delete event", slog.String("avatar_id", avatar.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "publish delete event", slog.String("avatar_id", avatar.ID), slog.Any("error", err))
 	}
-	observability.ObserveDelete("success", avatar.SizeBytes)
-	slog.InfoContext(ctx, "avatar deleted", "avatar_id", avatar.ID, "user_id", avatar.UserID)
+	s.metrics.ObserveDelete("success", avatar.SizeBytes)
+	s.logger.InfoContext(ctx, "avatar deleted", "avatar_id", avatar.ID, "user_id", avatar.UserID)
 	return nil
 }
 

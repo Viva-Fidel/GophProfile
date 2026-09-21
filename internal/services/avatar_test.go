@@ -7,10 +7,18 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"gophprofile/internal/domain"
+	"gophprofile/internal/observability"
 )
+
+func testMetrics() *observability.Metrics {
+	return observability.NewMetrics(prometheus.NewRegistry())
+}
 
 type memRepo struct {
 	items map[string]domain.Avatar
@@ -160,7 +168,7 @@ func TestAvatarServiceUploadGetDelete(t *testing.T) {
 	repo := newMemRepo()
 	store := newMemStore()
 	pub := &memPub{}
-	svc := NewAvatarService(repo, store, pub, "http://localhost:8080")
+	svc := NewAvatarService(repo, store, pub, "http://localhost:8080", slog.New(slog.DiscardHandler), testMetrics())
 
 	if _, err := svc.Upload(context.Background(), "", "a.png", pngBytes(t)); err != domain.ErrMissingUser {
 		t.Fatal(err)
@@ -230,7 +238,7 @@ func TestAvatarServiceUploadGetDelete(t *testing.T) {
 func TestAvatarServiceDeleteUserAvatar(t *testing.T) {
 	repo := newMemRepo()
 	store := newMemStore()
-	svc := NewAvatarService(repo, store, &memPub{}, "http://localhost:8080")
+	svc := NewAvatarService(repo, store, &memPub{}, "http://localhost:8080", slog.New(slog.DiscardHandler), testMetrics())
 	av, err := svc.Upload(context.Background(), "u1", "a.png", pngBytes(t))
 	if err != nil {
 		t.Fatal(err)

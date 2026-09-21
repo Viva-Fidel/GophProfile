@@ -19,11 +19,13 @@ type Server struct {
 	avatars *handlers.AvatarHandler
 	health  *handlers.HealthHandler
 	webDir  string
+	logger  *slog.Logger
+	metrics *observability.Metrics
 }
 
 // New создаёт HTTP-сервер.
-func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string) *Server {
-	return &Server{avatars: avatars, health: health, webDir: webDir}
+func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string, logger *slog.Logger, metrics *observability.Metrics) *Server {
+	return &Server{avatars: avatars, health: health, webDir: webDir, logger: logger, metrics: metrics}
 }
 
 type responseWriter struct {
@@ -54,11 +56,11 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.Recoverer)
-	r.Use(observability.HTTPMiddleware("gophprofile-http"))
+	r.Use(observability.HTTPMiddleware("gophprofile-http", s.metrics))
 	r.Use(s.logging)
 
 	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		observability.MetricsHandler().ServeHTTP(w, r)
+		s.metrics.Handler().ServeHTTP(w, r)
 	})
 	r.Get("/health", s.health.Get)
 
@@ -91,7 +93,7 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		start := time.Now()
 		wrapped := &responseWriter{ResponseWriter: w}
 		next.ServeHTTP(wrapped, r)
-		slog.InfoContext(r.Context(), "http request",
+		s.logger.InfoContext(r.Context(), "http request",
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", wrapped.statusCode()),
