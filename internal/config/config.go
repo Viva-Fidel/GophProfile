@@ -12,10 +12,11 @@ import (
 
 // Config — конфигурация из окружения.
 type Config struct {
-	Server ServerConfig
-	DB     DBConfig
-	S3     S3Config
-	Broker BrokerConfig
+	Server        ServerConfig
+	DB            DBConfig
+	S3            S3Config
+	Broker        BrokerConfig
+	Observability ObservabilityConfig
 }
 
 // ServerConfig описывает сетевые параметры сервера.
@@ -43,17 +44,33 @@ type BrokerConfig struct {
 	URI string `env:"RABBITMQ_URI"`
 }
 
+// ObservabilityConfig описывает трейсинг, метрики и логирование.
+type ObservabilityConfig struct {
+	ServiceName    string `env:"OTEL_SERVICE_NAME" envDefault:"gophprofile"`
+	OTLPEndpoint   string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"localhost:4317"`
+	OTLPInsecure   bool   `env:"OTEL_EXPORTER_OTLP_INSECURE" envDefault:"true"`
+	TracingEnabled bool   `env:"OTEL_TRACING_ENABLED" envDefault:"true"`
+	MetricsAddress string `env:"METRICS_ADDRESS" envDefault:":9091"`
+	LogLevel       string `env:"LOG_LEVEL" envDefault:"info"`
+}
+
 // Flags — итоговые параметры запуска сервера и воркера.
 type Flags struct {
-	RunAddress  string
-	PublicURL   string
-	DatabaseURI string
-	S3Endpoint  string
-	S3AccessKey string
-	S3SecretKey string
-	S3Bucket    string
-	S3UseSSL    bool
-	RabbitURI   string
+	RunAddress     string
+	PublicURL      string
+	DatabaseURI    string
+	S3Endpoint     string
+	S3AccessKey    string
+	S3SecretKey    string
+	S3Bucket       string
+	S3UseSSL       bool
+	RabbitURI      string
+	ServiceName    string
+	OTLPEndpoint   string
+	OTLPInsecure   bool
+	TracingEnabled bool
+	MetricsAddress string
+	LogLevel       string
 }
 
 // loadConfig читает конфигурацию из переменных окружения.
@@ -68,15 +85,21 @@ func loadConfig() (*Config, error) {
 // parseFlags накладывает CLI-флаги поверх значений из окружения.
 func parseFlags(conf *Config, fs *flag.FlagSet, args []string) (*Flags, error) {
 	flags := &Flags{
-		RunAddress:  conf.Server.Address,
-		PublicURL:   conf.Server.PublicURL,
-		DatabaseURI: conf.DB.DatabaseURI,
-		S3Endpoint:  conf.S3.Endpoint,
-		S3AccessKey: conf.S3.AccessKey,
-		S3SecretKey: conf.S3.SecretKey,
-		S3Bucket:    conf.S3.Bucket,
-		S3UseSSL:    conf.S3.UseSSL,
-		RabbitURI:   conf.Broker.URI,
+		RunAddress:     conf.Server.Address,
+		PublicURL:      conf.Server.PublicURL,
+		DatabaseURI:    conf.DB.DatabaseURI,
+		S3Endpoint:     conf.S3.Endpoint,
+		S3AccessKey:    conf.S3.AccessKey,
+		S3SecretKey:    conf.S3.SecretKey,
+		S3Bucket:       conf.S3.Bucket,
+		S3UseSSL:       conf.S3.UseSSL,
+		RabbitURI:      conf.Broker.URI,
+		ServiceName:    conf.Observability.ServiceName,
+		OTLPEndpoint:   conf.Observability.OTLPEndpoint,
+		OTLPInsecure:   conf.Observability.OTLPInsecure,
+		TracingEnabled: conf.Observability.TracingEnabled,
+		MetricsAddress: conf.Observability.MetricsAddress,
+		LogLevel:       conf.Observability.LogLevel,
 	}
 
 	fs.StringVar(&flags.RunAddress, "a", flags.RunAddress, "service run address")
@@ -85,6 +108,10 @@ func parseFlags(conf *Config, fs *flag.FlagSet, args []string) (*Flags, error) {
 	fs.StringVar(&flags.S3Endpoint, "s3-endpoint", flags.S3Endpoint, "s3 endpoint host:port")
 	fs.StringVar(&flags.S3Bucket, "s3-bucket", flags.S3Bucket, "s3 bucket name")
 	fs.StringVar(&flags.RabbitURI, "r", flags.RabbitURI, "rabbitmq uri")
+	fs.StringVar(&flags.ServiceName, "service-name", flags.ServiceName, "otel service name")
+	fs.StringVar(&flags.OTLPEndpoint, "otlp-endpoint", flags.OTLPEndpoint, "otlp exporter endpoint host:port")
+	fs.StringVar(&flags.MetricsAddress, "metrics-address", flags.MetricsAddress, "prometheus metrics listen address")
+	fs.StringVar(&flags.LogLevel, "log-level", flags.LogLevel, "log level: debug|info|warn|error")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}

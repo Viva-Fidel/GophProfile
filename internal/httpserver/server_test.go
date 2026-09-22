@@ -6,14 +6,18 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"gophprofile/internal/domain"
 	"gophprofile/internal/handlers"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/services"
 )
 
@@ -78,11 +82,14 @@ func pngBytes(t *testing.T) []byte {
 
 func TestRouter(t *testing.T) {
 	webDir := filepath.Join("..", "..", "web")
-	svc := services.NewAvatarService(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, memPub{}, "http://localhost:8080")
+	metrics := observability.NewMetrics(prometheus.NewRegistry())
+	svc := services.NewAvatarService(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, memPub{}, "http://localhost:8080", slog.New(slog.DiscardHandler), metrics)
 	h := New(
-		handlers.NewAvatarHandler(svc),
+		handlers.NewAvatarHandler(svc, slog.New(slog.DiscardHandler)),
 		handlers.NewHealthHandler(services.NewHealthService(nil, pingOK{}, pingOK{})),
 		webDir,
+		slog.New(slog.DiscardHandler),
+		metrics,
 	).Router()
 
 	rr := httptest.NewRecorder()

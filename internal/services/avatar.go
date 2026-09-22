@@ -13,13 +13,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gophprofile/internal/broker"
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/storage"
 	"gophprofile/pkg/retry"
 )
+
+const avatarTracerName = "gophprofile/avatar-service"
 
 // AvatarRepository — хранилище метаданных аватарок для сервиса.
 type AvatarRepository interface {
@@ -36,40 +43,74 @@ type AvatarService struct {
 	objects   storage.ObjectStorage
 	publisher broker.Publisher
 	publicURL string
+	logger    *slog.Logger
+	metrics   *observability.Metrics
 }
 
 // NewAvatarService создаёт сервис аватарок.
-func NewAvatarService(repo AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string) *AvatarService {
+func NewAvatarService(repo AvatarRepository, objects storage.ObjectStorage, publisher broker.Publisher, publicURL string, logger *slog.Logger, metrics *observability.Metrics) *AvatarService {
 	return &AvatarService{
 		repo:      repo,
 		objects:   objects,
 		publisher: publisher,
 		publicURL: strings.TrimRight(publicURL, "/"),
+		logger:    logger,
+		metrics:   metrics,
 	}
 }
 
 // Upload валидирует файл, сохраняет оригинал в S3, пишет метаданные и публикует событие.
 func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, data []byte) (*domain.Avatar, error) {
+	start := time.Now()
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "upload_avatar",
+		trace.WithAttributes(
+			attribute.String("user_id", userID),
+			attribute.String("file_name", fileName),
+			attribute.Int64("file_size", int64(len(data))),
+		),
+	)
+	defer span.End()
+
+	logger := s.logger.With(
+		"user_id", userID,
+		"file_name", fileName,
+		"file_size", len(data),
+	)
+	logger.InfoContext(ctx, "uploading avatar")
+
 	if userID == "" {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.SetStatus(codes.Error, "missing user")
 		return nil, domain.ErrMissingUser
 	}
 	if len(data) == 0 {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.SetStatus(codes.Error, "missing file")
 		return nil, domain.ErrMissingFile
 	}
 	if int64(len(data)) > domain.MaxUploadBytes {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.SetStatus(codes.Error, "too large")
 		return nil, domain.ErrTooLarge
 	}
 
 	mime, width, height, err := imageutil.Detect(data)
 	if err != nil {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
+	span.SetAttributes(attribute.String("mime_type", mime))
 
 	id := uuid.NewString()
 	now := time.Now().UTC()
 	s3Key := fmt.Sprintf("originals/%s/%s/%s", userID, id, sanitizeFileName(fileName))
 
 	if err := s.objects.Upload(ctx, s3Key, data, mime); err != nil {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
@@ -89,37 +130,60 @@ func (s *AvatarService) Upload(ctx context.Context, userID, fileName string, dat
 		UpdatedAt:        now,
 	}
 	if err := s.repo.Create(ctx, avatar); err != nil {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 
 	event := domain.AvatarUploadEvent{AvatarID: id, UserID: userID, S3Key: s3Key}
 	body, err := json.Marshal(event)
 	if err != nil {
+		s.metrics.ObserveUpload("error", 0, time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if err := retry.Do(ctx, 3, 200*time.Millisecond, func() error {
 		return s.publisher.Publish(ctx, domain.RoutingUploaded, "upload:"+id, body)
 	}); err != nil {
-		slog.ErrorContext(ctx, "publish upload event", slog.String("avatar_id", id), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "publish upload event", slog.String("avatar_id", id), slog.Any("error", err))
 	}
 
+	s.metrics.ObserveUpload("success", avatar.SizeBytes, time.Since(start))
+	logger.InfoContext(ctx, "avatar uploaded", "avatar_id", id, "mime_type", mime)
 	return &avatar, nil
 }
 
 // Get возвращает аватарку по id.
 func (s *AvatarService) Get(ctx context.Context, id string) (*domain.Avatar, error) {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "get_avatar",
+		trace.WithAttributes(attribute.String("avatar_id", id)),
+	)
+	defer span.End()
 	return s.repo.GetByID(ctx, id)
 }
 
 // GetLatestByUser возвращает последнюю аватарку пользователя.
 func (s *AvatarService) GetLatestByUser(ctx context.Context, userID string) (*domain.Avatar, error) {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "get_latest_avatar",
+		trace.WithAttributes(attribute.String("user_id", userID)),
+	)
+	defer span.End()
 	return s.repo.GetLatestByUserID(ctx, userID)
 }
 
 // ListByUser возвращает список аватарок пользователя.
 func (s *AvatarService) ListByUser(ctx context.Context, userID string) ([]domain.Avatar, error) {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "list_avatars",
+		trace.WithAttributes(attribute.String("user_id", userID)),
+	)
+	defer span.End()
+
 	items, err := s.repo.ListByUserID(ctx, userID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if items == nil {
@@ -130,8 +194,19 @@ func (s *AvatarService) ListByUser(ctx context.Context, userID string) ([]domain
 
 // File отдаёт байты изображения нужного размера и формата.
 func (s *AvatarService) File(ctx context.Context, avatar *domain.Avatar, size, format string) (data []byte, contentType, etag string, err error) {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "get_avatar_file",
+		trace.WithAttributes(
+			attribute.String("avatar_id", avatar.ID),
+			attribute.String("size", size),
+			attribute.String("format", format),
+		),
+	)
+	defer span.End()
+
 	_, _, original, err := imageutil.ParseSize(size)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, "", "", err
 	}
 
@@ -145,6 +220,8 @@ func (s *AvatarService) File(ctx context.Context, avatar *domain.Avatar, size, f
 
 	data, contentType, err = s.objects.Download(ctx, key)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, "", "", err
 	}
 	if contentType == "" {
@@ -154,6 +231,8 @@ func (s *AvatarService) File(ctx context.Context, avatar *domain.Avatar, size, f
 	if format != "" {
 		converted, mime, convErr := imageutil.Convert(data, format)
 		if convErr != nil {
+			span.RecordError(convErr)
+			span.SetStatus(codes.Error, convErr.Error())
 			return nil, "", "", convErr
 		}
 		data = converted
@@ -167,14 +246,27 @@ func (s *AvatarService) File(ctx context.Context, avatar *domain.Avatar, size, f
 
 // Delete мягко удаляет аватарку, если actor — её владелец.
 func (s *AvatarService) Delete(ctx context.Context, actorUserID, avatarID string) error {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "delete_avatar",
+		trace.WithAttributes(
+			attribute.String("actor_user_id", actorUserID),
+			attribute.String("avatar_id", avatarID),
+		),
+	)
+	defer span.End()
+
 	if actorUserID == "" {
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrMissingUser
 	}
 	avatar, err := s.repo.GetByID(ctx, avatarID)
 	if err != nil {
+		s.metrics.ObserveDelete("error", 0)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if avatar.UserID != actorUserID {
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrForbidden
 	}
 	return s.softDeleteAndPublish(ctx, avatar)
@@ -182,14 +274,27 @@ func (s *AvatarService) Delete(ctx context.Context, actorUserID, avatarID string
 
 // DeleteUserAvatar мягко удаляет текущую аватарку пользователя.
 func (s *AvatarService) DeleteUserAvatar(ctx context.Context, actorUserID, userID string) error {
+	ctx, span := otel.Tracer(avatarTracerName).Start(ctx, "delete_user_avatar",
+		trace.WithAttributes(
+			attribute.String("actor_user_id", actorUserID),
+			attribute.String("user_id", userID),
+		),
+	)
+	defer span.End()
+
 	if actorUserID == "" {
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrMissingUser
 	}
 	if actorUserID != userID {
+		s.metrics.ObserveDelete("error", 0)
 		return domain.ErrForbidden
 	}
 	avatar, err := s.repo.GetLatestByUserID(ctx, userID)
 	if err != nil {
+		s.metrics.ObserveDelete("error", 0)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	return s.softDeleteAndPublish(ctx, avatar)
@@ -208,6 +313,7 @@ func (s *AvatarService) ThumbnailURL(id, size string) string {
 // softDeleteAndPublish помечает запись удалённой и публикует событие очистки S3.
 func (s *AvatarService) softDeleteAndPublish(ctx context.Context, avatar *domain.Avatar) error {
 	if err := s.repo.SoftDelete(ctx, avatar.ID); err != nil {
+		s.metrics.ObserveDelete("error", 0)
 		return err
 	}
 	keys := []string{avatar.S3Key}
@@ -219,13 +325,16 @@ func (s *AvatarService) softDeleteAndPublish(ctx context.Context, avatar *domain
 	event := domain.AvatarDeleteEvent{AvatarID: avatar.ID, S3Keys: keys}
 	body, err := json.Marshal(event)
 	if err != nil {
+		s.metrics.ObserveDelete("error", 0)
 		return err
 	}
 	if err := retry.Do(ctx, 3, 200*time.Millisecond, func() error {
 		return s.publisher.Publish(ctx, domain.RoutingDeleted, "delete:"+avatar.ID, body)
 	}); err != nil {
-		slog.ErrorContext(ctx, "publish delete event", slog.String("avatar_id", avatar.ID), slog.Any("error", err))
+		s.logger.ErrorContext(ctx, "publish delete event", slog.String("avatar_id", avatar.ID), slog.Any("error", err))
 	}
+	s.metrics.ObserveDelete("success", avatar.SizeBytes)
+	s.logger.InfoContext(ctx, "avatar deleted", "avatar_id", avatar.ID, "user_id", avatar.UserID)
 	return nil
 }
 

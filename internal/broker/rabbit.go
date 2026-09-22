@@ -7,9 +7,16 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gophprofile/internal/domain"
+	"gophprofile/internal/observability"
 )
+
+const brokerTracerName = "gophprofile/broker"
 
 // Message — входящее сообщение брокера с ручным ack/nack.
 type Message struct {
@@ -86,13 +93,33 @@ func (r *Rabbit) declare() error {
 
 // Publish отправляет persistent-сообщение с уникальным MessageId.
 func (r *Rabbit) Publish(ctx context.Context, routingKey, messageID string, body []byte) error {
-	return r.channel.PublishWithContext(ctx, domain.ExchangeName, routingKey, false, false, amqp.Publishing{
+	ctx, span := otel.Tracer(brokerTracerName).Start(ctx, "rabbitmq.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination", domain.ExchangeName),
+			attribute.String("messaging.rabbitmq.routing_key", routingKey),
+			attribute.String("messaging.message_id", messageID),
+		),
+	)
+	defer span.End()
+
+	headers := amqp.Table{}
+	otel.GetTextMapPropagator().Inject(ctx, observability.AMQPHeaderCarrier(headers))
+
+	err := r.channel.PublishWithContext(ctx, domain.ExchangeName, routingKey, false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		MessageId:    messageID,
 		Timestamp:    time.Now().UTC(),
+		Headers:      headers,
 		Body:         body,
 	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
 }
 
 // Consume читает очередь в отдельном канале и передаёт сообщения handler.
@@ -117,19 +144,46 @@ func (r *Rabbit) Consume(ctx context.Context, queue string, handler func(context
 			if !ok {
 				return fmt.Errorf("rabbitmq channel closed")
 			}
+			msgCtx := otel.GetTextMapPropagator().Extract(ctx, observability.AMQPHeaderCarrier(d.Headers))
+			msgCtx, span := otel.Tracer(brokerTracerName).Start(msgCtx, "rabbitmq.consume",
+				trace.WithSpanKind(trace.SpanKindConsumer),
+				trace.WithAttributes(
+					attribute.String("messaging.system", "rabbitmq"),
+					attribute.String("messaging.source", queue),
+					attribute.String("messaging.message_id", d.MessageId),
+				),
+			)
 			msg := Message{
 				ID:   d.MessageId,
 				Body: d.Body,
 				Ack:  func() error { return d.Ack(false) },
 				Nack: func(requeue bool) error { return d.Nack(false, requeue) },
 			}
-			if err := handler(ctx, msg); err != nil {
+			if err := handler(msgCtx, msg); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				span.End()
 				_ = msg.Nack(true)
 				continue
 			}
+			span.End()
 			_ = msg.Ack()
 		}
 	}
+}
+
+// QueueMessageCount возвращает число сообщений в очереди.
+func (r *Rabbit) QueueMessageCount(_ context.Context, queue string) (int, error) {
+	ch, err := r.conn.Channel()
+	if err != nil {
+		return 0, err
+	}
+	defer ch.Close()
+	q, err := ch.QueueInspect(queue)
+	if err != nil {
+		return 0, err
+	}
+	return q.Messages, nil
 }
 
 // Ping проверяет, что соединение с брокером живо.

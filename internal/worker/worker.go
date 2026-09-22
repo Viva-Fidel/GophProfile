@@ -9,12 +9,20 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"gophprofile/internal/broker"
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
+	"gophprofile/internal/observability"
 	"gophprofile/internal/storage"
 	"gophprofile/pkg/retry"
 )
+
+const workerTracerName = "gophprofile/worker"
 
 // AvatarRepository — хранилище метаданных аватарок для воркера.
 type AvatarRepository interface {
@@ -34,11 +42,13 @@ type Worker struct {
 	repo     AvatarRepository
 	objects  storage.ObjectStorage
 	consumer Consumer
+	logger   *slog.Logger
+	metrics  *observability.Metrics
 }
 
 // New создаёт воркер обработки событий.
-func New(repo AvatarRepository, objects storage.ObjectStorage, consumer Consumer) *Worker {
-	return &Worker{repo: repo, objects: objects, consumer: consumer}
+func New(repo AvatarRepository, objects storage.ObjectStorage, consumer Consumer, logger *slog.Logger, metrics *observability.Metrics) *Worker {
+	return &Worker{repo: repo, objects: objects, consumer: consumer, logger: logger, metrics: metrics}
 }
 
 // Run подписывается на очереди загрузки и удаления до отмены ctx.
@@ -63,7 +73,7 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) handleUploaded(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarUploadEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		slog.Error("invalid upload event", slog.Any("error", err))
+		w.logger.ErrorContext(ctx, "invalid upload event", slog.Any("error", err))
 		return nil
 	}
 	return w.HandleUploadEvent(ctx, event)
@@ -73,7 +83,7 @@ func (w *Worker) handleUploaded(ctx context.Context, msg broker.Message) error {
 func (w *Worker) handleDeleted(ctx context.Context, msg broker.Message) error {
 	var event domain.AvatarDeleteEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil {
-		slog.Error("invalid delete event", slog.Any("error", err))
+		w.logger.ErrorContext(ctx, "invalid delete event", slog.Any("error", err))
 		return nil
 	}
 	return w.HandleDeleteEvent(ctx, event)
@@ -81,22 +91,46 @@ func (w *Worker) handleDeleted(ctx context.Context, msg broker.Message) error {
 
 // HandleUploadEvent идемпотентно создаёт миниатюры и обновляет статус.
 func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploadEvent) error {
+	start := time.Now()
+	ctx, span := otel.Tracer(workerTracerName).Start(ctx, "process_avatar",
+		trace.WithAttributes(
+			attribute.String("avatar_id", event.AvatarID),
+			attribute.String("user_id", event.UserID),
+			attribute.String("s3_key", event.S3Key),
+		),
+	)
+	defer span.End()
+
+	w.logger.InfoContext(ctx, "processing avatar upload",
+		"avatar_id", event.AvatarID,
+		"user_id", event.UserID,
+	)
+
 	existing, err := w.repo.GetByID(ctx, event.AvatarID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
+			w.metrics.ObserveProcessing("skipped", time.Since(start))
 			return nil
 		}
+		w.metrics.ObserveProcessing("error", time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if existing.ProcessingStatus == domain.ProcessingCompleted {
+		w.metrics.ObserveProcessing("skipped", time.Since(start))
 		return nil
 	}
 
 	claimed, err := w.repo.ClaimForProcessing(ctx, event.AvatarID)
 	if err != nil {
+		w.metrics.ObserveProcessing("error", time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if claimed.ProcessingStatus == domain.ProcessingCompleted {
+		w.metrics.ObserveProcessing("skipped", time.Since(start))
 		return nil
 	}
 
@@ -110,6 +144,9 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 		return nil
 	}); err != nil {
 		_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
+		w.metrics.ObserveProcessing("error", time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
@@ -125,6 +162,9 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 		resized, err := imageutil.Resize(original, size.w, size.h)
 		if err != nil {
 			_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
+			w.metrics.ObserveProcessing("error", time.Since(start))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 		key := fmt.Sprintf("thumbnails/%s/%s.jpg", event.AvatarID, size.name)
@@ -132,17 +172,43 @@ func (w *Worker) HandleUploadEvent(ctx context.Context, event domain.AvatarUploa
 			return w.objects.Upload(ctx, key, resized, "image/jpeg")
 		}); err != nil {
 			_ = w.repo.MarkProcessingFailed(ctx, event.AvatarID)
+			w.metrics.ObserveProcessing("error", time.Since(start))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 		thumbs[size.name] = key
 	}
 
-	return w.repo.UpdateProcessingResult(ctx, event.AvatarID, thumbs, domain.ProcessingCompleted)
+	if err := w.repo.UpdateProcessingResult(ctx, event.AvatarID, thumbs, domain.ProcessingCompleted); err != nil {
+		w.metrics.ObserveProcessing("error", time.Since(start))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	w.metrics.ObserveProcessing("success", time.Since(start))
+	w.logger.InfoContext(ctx, "avatar processing completed", "avatar_id", event.AvatarID)
+	return nil
 }
 
 // HandleDeleteEvent идемпотентно удаляет объекты из S3.
 func (w *Worker) HandleDeleteEvent(ctx context.Context, event domain.AvatarDeleteEvent) error {
-	return retry.Do(ctx, 5, 300*time.Millisecond, func() error {
+	ctx, span := otel.Tracer(workerTracerName).Start(ctx, "delete_avatar_objects",
+		trace.WithAttributes(
+			attribute.String("avatar_id", event.AvatarID),
+			attribute.Int("s3_keys_count", len(event.S3Keys)),
+		),
+	)
+	defer span.End()
+
+	err := retry.Do(ctx, 5, 300*time.Millisecond, func() error {
 		return w.objects.Delete(ctx, event.S3Keys)
 	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	w.logger.InfoContext(ctx, "avatar objects deleted", "avatar_id", event.AvatarID)
+	return nil
 }

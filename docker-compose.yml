@@ -44,6 +44,67 @@ services:
       retries: 10
       start_period: 15s
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - server
+      - worker
+
+  loki:
+    image: grafana/loki:3.1.1
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
   server:
     build: .
     command: ["./server"]
@@ -53,6 +114,8 @@ services:
       rabbitmq:
         condition: service_healthy
       minio:
+        condition: service_started
+      jaeger:
         condition: service_started
     environment:
       RUN_ADDRESS: :8080
@@ -64,6 +127,11 @@ services:
       S3_BUCKET: avatars
       S3_USE_SSL: "false"
       RABBITMQ_URI: amqp://guest:guest@rabbitmq:5672/
+      OTEL_SERVICE_NAME: gophprofile-server
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_TRACING_ENABLED: "true"
+      LOG_LEVEL: info
     ports:
       - "8080:8080"
 
@@ -77,6 +145,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+      jaeger:
+        condition: service_started
     environment:
       DATABASE_URI: postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable
       S3_ENDPOINT: minio:9000
@@ -85,7 +155,18 @@ services:
       S3_BUCKET: avatars
       S3_USE_SSL: "false"
       RABBITMQ_URI: amqp://guest:guest@rabbitmq:5672/
+      OTEL_SERVICE_NAME: gophprofile-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_TRACING_ENABLED: "true"
+      METRICS_ADDRESS: :9091
+      LOG_LEVEL: info
+    ports:
+      - "9091:9091"
 
 volumes:
   postgres_data:
   minio_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:

@@ -10,9 +10,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gophprofile/internal/domain"
 )
+
+const dbTracerName = "gophprofile/repository"
 
 type pgPool interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -30,10 +36,25 @@ func NewPostgresAvatarRepository(db *pgxpool.Pool) *PostgresAvatarRepository {
 	return &PostgresAvatarRepository{db: db}
 }
 
+func startDBSpan(ctx context.Context, op, statement string) (context.Context, trace.Span) {
+	return otel.Tracer(dbTracerName).Start(ctx, "db."+op,
+		trace.WithAttributes(
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.operation", op),
+			attribute.String("db.statement", statement),
+		),
+	)
+}
+
 // Create сохраняет новую запись аватарки.
 func (r *PostgresAvatarRepository) Create(ctx context.Context, a domain.Avatar) error {
+	ctx, span := startDBSpan(ctx, "insert", "INSERT INTO avatars")
+	defer span.End()
+
 	thumbs, err := marshalThumbs(a.ThumbnailS3Keys)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	_, err = r.db.Exec(ctx, `
@@ -43,22 +64,39 @@ func (r *PostgresAvatarRepository) Create(ctx context.Context, a domain.Avatar) 
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 	`, a.ID, a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.Width, a.Height,
 		a.S3Key, thumbs, a.UploadStatus, a.ProcessingStatus, a.CreatedAt, a.UpdatedAt)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	return err
 }
 
 // GetByID возвращает незакрытую аватарку по id.
 func (r *PostgresAvatarRepository) GetByID(ctx context.Context, id string) (*domain.Avatar, error) {
+	ctx, span := startDBSpan(ctx, "select", "SELECT FROM avatars BY id")
+	defer span.End()
+	span.SetAttributes(attribute.String("avatar.id", id))
+
 	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
 		FROM avatars WHERE id = $1 AND deleted_at IS NULL
 	`, id)
-	return scanAvatar(row)
+	a, err := scanAvatar(row)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return a, err
 }
 
 // GetLatestByUserID возвращает последнюю аватарку пользователя.
 func (r *PostgresAvatarRepository) GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error) {
+	ctx, span := startDBSpan(ctx, "select", "SELECT FROM avatars BY user_id LIMIT 1")
+	defer span.End()
+	span.SetAttributes(attribute.String("user.id", userID))
+
 	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
@@ -67,11 +105,20 @@ func (r *PostgresAvatarRepository) GetLatestByUserID(ctx context.Context, userID
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, userID)
-	return scanAvatar(row)
+	a, err := scanAvatar(row)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return a, err
 }
 
 // ListByUserID возвращает все незакрытые аватарки пользователя.
 func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID string) ([]domain.Avatar, error) {
+	ctx, span := startDBSpan(ctx, "select", "SELECT FROM avatars BY user_id")
+	defer span.End()
+	span.SetAttributes(attribute.String("user.id", userID))
+
 	rows, err := r.db.Query(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
@@ -80,6 +127,8 @@ func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID stri
 		ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	defer rows.Close()
@@ -88,6 +137,8 @@ func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID stri
 	for rows.Next() {
 		a, err := scanAvatar(rows)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return nil, err
 		}
 		result = append(result, *a)
@@ -97,11 +148,17 @@ func (r *PostgresAvatarRepository) ListByUserID(ctx context.Context, userID stri
 
 // SoftDelete помечает аватарку удалённой.
 func (r *PostgresAvatarRepository) SoftDelete(ctx context.Context, id string) error {
+	ctx, span := startDBSpan(ctx, "update", "UPDATE avatars soft delete")
+	defer span.End()
+	span.SetAttributes(attribute.String("avatar.id", id))
+
 	tag, err := r.db.Exec(ctx, `
 		UPDATE avatars SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -113,6 +170,10 @@ func (r *PostgresAvatarRepository) SoftDelete(ctx context.Context, id string) er
 // ClaimForProcessing атомарно берёт аватарку в обработку.
 // Если обработка уже завершена, возвращает существующую запись без ошибки.
 func (r *PostgresAvatarRepository) ClaimForProcessing(ctx context.Context, id string) (*domain.Avatar, error) {
+	ctx, span := startDBSpan(ctx, "update", "UPDATE avatars claim processing")
+	defer span.End()
+	span.SetAttributes(attribute.String("avatar.id", id))
+
 	row := r.db.QueryRow(ctx, `
 		UPDATE avatars
 		SET processing_status = $2, updated_at = NOW()
@@ -125,6 +186,10 @@ func (r *PostgresAvatarRepository) ClaimForProcessing(ctx context.Context, id st
 	if errors.Is(err, domain.ErrNotFound) {
 		existing, getErr := r.GetByIDIncludingDeleted(ctx, id)
 		if getErr != nil {
+			if !errors.Is(getErr, domain.ErrNotFound) {
+				span.RecordError(getErr)
+				span.SetStatus(codes.Error, getErr.Error())
+			}
 			return nil, getErr
 		}
 		if existing.ProcessingStatus == domain.ProcessingCompleted {
@@ -132,24 +197,45 @@ func (r *PostgresAvatarRepository) ClaimForProcessing(ctx context.Context, id st
 		}
 		return nil, domain.ErrNotFound
 	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	return a, err
 }
 
 // GetByIDIncludingDeleted возвращает аватарку без фильтра по deleted_at.
 func (r *PostgresAvatarRepository) GetByIDIncludingDeleted(ctx context.Context, id string) (*domain.Avatar, error) {
+	ctx, span := startDBSpan(ctx, "select", "SELECT FROM avatars BY id including deleted")
+	defer span.End()
+
 	row := r.db.QueryRow(ctx, `
 		SELECT id, user_id, file_name, mime_type, size_bytes, width, height,
 			s3_key, thumbnail_s3_keys, upload_status, processing_status,
 			created_at, updated_at, deleted_at
 		FROM avatars WHERE id = $1
 	`, id)
-	return scanAvatar(row)
+	a, err := scanAvatar(row)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return a, err
 }
 
 // UpdateProcessingResult сохраняет ключи миниатюр и статус обработки.
 func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, id string, thumbs map[string]string, status string) error {
+	ctx, span := startDBSpan(ctx, "update", "UPDATE avatars processing result")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("avatar.id", id),
+		attribute.String("processing.status", status),
+	)
+
 	payload, err := marshalThumbs(thumbs)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	tag, err := r.db.Exec(ctx, `
@@ -158,6 +244,8 @@ func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, i
 		WHERE id = $1
 	`, id, payload, status)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -168,9 +256,16 @@ func (r *PostgresAvatarRepository) UpdateProcessingResult(ctx context.Context, i
 
 // MarkProcessingFailed помечает обработку как неуспешную.
 func (r *PostgresAvatarRepository) MarkProcessingFailed(ctx context.Context, id string) error {
+	ctx, span := startDBSpan(ctx, "update", "UPDATE avatars processing failed")
+	defer span.End()
+
 	_, err := r.db.Exec(ctx, `
 		UPDATE avatars SET processing_status = $2, updated_at = NOW() WHERE id = $1
 	`, id, domain.ProcessingFailed)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 	return err
 }
 

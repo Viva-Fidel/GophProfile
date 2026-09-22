@@ -7,12 +7,20 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"gophprofile/internal/broker"
 	"gophprofile/internal/domain"
+	"gophprofile/internal/observability"
 )
+
+func testMetrics() *observability.Metrics {
+	return observability.NewMetrics(prometheus.NewRegistry())
+}
 
 type memRepo struct {
 	items map[string]domain.Avatar
@@ -101,7 +109,7 @@ func TestHandleUploadEvent(t *testing.T) {
 		},
 	}}
 	store := &memStore{objects: map[string][]byte{"orig": data}}
-	w := New(repo, store, nil)
+	w := New(repo, store, nil, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.HandleUploadEvent(context.Background(), domain.AvatarUploadEvent{AvatarID: "id1", S3Key: "orig"}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +129,14 @@ func TestHandleUploadEventIdempotent(t *testing.T) {
 	repo := &memRepo{items: map[string]domain.Avatar{
 		"id1": {ID: "id1", ProcessingStatus: domain.ProcessingCompleted},
 	}}
-	w := New(repo, &memStore{objects: map[string][]byte{}}, nil)
+	w := New(repo, &memStore{objects: map[string][]byte{}}, nil, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.HandleUploadEvent(context.Background(), domain.AvatarUploadEvent{AvatarID: "id1"}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestHandleUploadEventMissing(t *testing.T) {
-	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, nil)
+	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, nil, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.HandleUploadEvent(context.Background(), domain.AvatarUploadEvent{AvatarID: "no"}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +144,7 @@ func TestHandleUploadEventMissing(t *testing.T) {
 
 func TestHandleDeleteEvent(t *testing.T) {
 	store := &memStore{objects: map[string][]byte{"a": []byte("1"), "b": []byte("2")}}
-	w := New(&memRepo{items: map[string]domain.Avatar{}}, store, nil)
+	w := New(&memRepo{items: map[string]domain.Avatar{}}, store, nil, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.HandleDeleteEvent(context.Background(), domain.AvatarDeleteEvent{AvatarID: "id", S3Keys: []string{"a", "b"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +160,7 @@ func (stubConsumer) Consume(context.Context, string, func(context.Context, broke
 }
 
 func TestHandleUploadedInvalidJSON(t *testing.T) {
-	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, nil)
+	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, nil, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.handleUploaded(context.Background(), broker.Message{Body: []byte("not-json")}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +170,7 @@ func TestHandleUploadedInvalidJSON(t *testing.T) {
 }
 
 func TestWorkerRun(t *testing.T) {
-	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, stubConsumer{})
+	w := New(&memRepo{items: map[string]domain.Avatar{}}, &memStore{objects: map[string][]byte{}}, stubConsumer{}, slog.New(slog.DiscardHandler), testMetrics())
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
