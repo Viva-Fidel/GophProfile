@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gophprofile-worker
+  labels:
+    app: gophprofile-worker
+spec:
+  selector:
+    app: gophprofile-worker
+  ports:
+  - name: metrics
+    port: 9091
+    targetPort: metrics
+  type: ClusterIP

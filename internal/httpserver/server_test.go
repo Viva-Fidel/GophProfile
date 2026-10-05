@@ -90,6 +90,8 @@ func TestRouter(t *testing.T) {
 		webDir,
 		slog.New(slog.DiscardHandler),
 		metrics,
+		0,
+		0,
 	).Router()
 
 	rr := httptest.NewRecorder()

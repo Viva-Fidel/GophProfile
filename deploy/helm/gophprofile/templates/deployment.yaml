@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gophprofile.fullname" . }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "gophprofile.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gophprofile.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gophprofile.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: server
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        env:
+        - name: RUN_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: run_address
+        - name: PUBLIC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: public_url
+        - name: S3_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: s3_endpoint
+        - name: S3_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: s3_bucket
+        - name: S3_USE_SSL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: s3_use_ssl
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: log_level
+        - name: OTEL_SERVICE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: otel_service_name
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: otel_exporter_otlp_endpoint
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: otel_exporter_otlp_insecure
+        - name: OTEL_TRACING_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: otel_tracing_enabled
+        - name: RATE_LIMIT_RPS
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: rate_limit_rps
+        - name: RATE_LIMIT_BURST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-config
+              key: rate_limit_burst
+        - name: DATABASE_URI
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-secrets
+              key: database-uri
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-secrets
+              key: s3-access-key
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-secrets
+              key: s3-secret-key
+        - name: RABBITMQ_URI
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gophprofile.fullname" . }}-secrets
+              key: rabbitmq-uri
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.probes.liveness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+          failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.probes.readiness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          successThreshold: {{ .Values.probes.readiness.successThreshold }}
+      volumes:
+      - name: tmp
+        emptyDir: {}

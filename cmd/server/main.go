@@ -21,6 +21,7 @@ import (
 	"gophprofile/internal/repository"
 	"gophprofile/internal/services"
 	"gophprofile/internal/storage"
+	"gophprofile/pkg/circuitbreaker"
 	"gophprofile/pkg/db"
 	"gophprofile/pkg/retry"
 )
@@ -74,24 +75,26 @@ func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 	}
 	defer database.Close()
 
-	s3, err := storage.NewS3(conf.S3Endpoint, conf.S3AccessKey, conf.S3SecretKey, conf.S3Bucket, conf.S3UseSSL)
+	s3Raw, err := storage.NewS3(conf.S3Endpoint, conf.S3AccessKey, conf.S3SecretKey, conf.S3Bucket, conf.S3UseSSL)
 	if err != nil {
 		return fmt.Errorf("s3 init: %w", err)
 	}
 	if err := retry.Do(ctx, 10, time.Second, func() error {
-		return s3.EnsureBucket(ctx)
+		return s3Raw.EnsureBucket(ctx)
 	}); err != nil {
 		return fmt.Errorf("s3 bucket: %w", err)
 	}
+	s3 := storage.NewBreakingStorage(s3Raw, circuitbreaker.New(circuitbreaker.Settings{Name: "s3"}))
 
-	var rabbit *broker.Rabbit
+	var rabbitRaw *broker.Rabbit
 	if err := retry.Do(ctx, 10, time.Second, func() error {
 		var e error
-		rabbit, e = broker.NewRabbit(conf.RabbitURI)
+		rabbitRaw, e = broker.NewRabbit(conf.RabbitURI)
 		return e
 	}); err != nil {
 		return fmt.Errorf("rabbitmq init: %w", err)
 	}
+	rabbit := broker.NewBreakingRabbit(rabbitRaw, circuitbreaker.New(circuitbreaker.Settings{Name: "rabbitmq"}))
 	defer func() {
 		if err := rabbit.Close(); err != nil {
 			logger.Error("rabbitmq close", slog.Any("error", err))
@@ -111,7 +114,10 @@ func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 		domain.QueueProcess,
 	)
 
-	repo := repository.NewPostgresAvatarRepository(database)
+	repo := repository.NewBreakingRepository(
+		repository.NewPostgresAvatarRepository(database),
+		circuitbreaker.New(circuitbreaker.Settings{Name: "postgres"}),
+	)
 	avatarSvc := services.NewAvatarService(repo, s3, rabbit, conf.PublicURL, logger.With("component", "avatar-service"), metrics)
 	healthSvc := services.NewHealthService(database, s3, rabbit)
 
@@ -121,6 +127,8 @@ func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 		"web",
 		logger.With("component", "httpserver"),
 		metrics,
+		conf.RateLimitRPS,
+		conf.RateLimitBurst,
 	).Router()
 
 	ln, err := net.Listen("tcp", conf.RunAddress)
@@ -146,13 +154,14 @@ func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 
 	select {
 	case <-ctx.Done():
+		logger.Info("shutdown signal received, draining HTTP connections")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
 		<-errCh
-		logger.Info("gophprofile stopped")
+		logger.Info("gophprofile stopped gracefully")
 		return nil
 	case err := <-errCh:
 		if err != nil {

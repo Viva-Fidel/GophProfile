@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-config
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+data:
+  run_address: {{ .Values.config.runAddress | quote }}
+  public_url: {{ .Values.config.publicUrl | quote }}
+  s3_endpoint: {{ .Values.config.s3Endpoint | quote }}
+  s3_bucket: {{ .Values.config.s3Bucket | quote }}
+  s3_use_ssl: {{ .Values.config.s3UseSSL | quote }}
+  log_level: {{ .Values.config.logLevel | quote }}
+  otel_service_name: {{ .Values.config.otelServiceName | quote }}
+  otel_exporter_otlp_endpoint: {{ .Values.config.otelExporterOtlpEndpoint | quote }}
+  otel_exporter_otlp_insecure: {{ .Values.config.otelExporterOtlpInsecure | quote }}
+  otel_tracing_enabled: {{ .Values.config.otelTracingEnabled | quote }}
+  max_file_size: {{ .Values.config.maxFileSize | quote }}
+  allowed_mime_types: {{ .Values.config.allowedMimeTypes | quote }}
+  rate_limit_rps: {{ .Values.config.rateLimitRPS | quote }}
+  rate_limit_burst: {{ .Values.config.rateLimitBurst | quote }}

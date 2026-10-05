@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gophprofile-config
+  labels:
+    app: gophprofile
+data:
+  run_address: ":8080"
+  public_url: "https://avatars.example.com"
+  s3_endpoint: "minio:9000"
+  s3_bucket: "avatars"
+  s3_use_ssl: "false"
+  log_level: "info"
+  otel_service_name: "gophprofile-server"
+  otel_exporter_otlp_endpoint: "otel-collector:4317"
+  otel_exporter_otlp_insecure: "true"
+  otel_tracing_enabled: "true"
+  max_file_size: "10485760"
+  allowed_mime_types: "image/jpeg,image/png,image/webp"
+  rate_limit_rps: "100"
+  rate_limit_burst: "200"

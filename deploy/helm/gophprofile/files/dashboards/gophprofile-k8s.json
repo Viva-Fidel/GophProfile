@@ -1,0 +1,149 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Deployment replicas",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas{deployment=~\"gophprofile.*\"}",
+          "legendFormat": "{{deployment}} desired",
+          "refId": "A"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_available{deployment=~\"gophprofile.*\"}",
+          "legendFormat": "{{deployment}} available",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Pod ready",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(kube_pod_status_ready{condition=\"true\",pod=~\"gophprofile.*\"}) by (namespace)",
+          "legendFormat": "ready {{namespace}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "HPA replicas",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler=~\"gophprofile.*\"}",
+          "legendFormat": "{{horizontalpodautoscaler}} current",
+          "refId": "A"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler=~\"gophprofile.*\"}",
+          "legendFormat": "{{horizontalpodautoscaler}} max",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Container CPU",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{pod=~\"gophprofile.*\",container!=\"\",container!=\"POD\"}[5m])) by (pod, container)",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cores" } }
+    },
+    {
+      "title": "Container memory",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(container_memory_working_set_bytes{pod=~\"gophprofile.*\",container!=\"\",container!=\"POD\"}) by (pod, container)",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "title": "Request rate",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[5m])) by (status)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "title": "Error rate (5xx)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)",
+          "legendFormat": "5xx ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 } }
+    },
+    {
+      "title": "Queue depth",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "broker_queue_depth",
+          "legendFormat": "{{queue}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Alerts firing",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertname=~\"GophProfile.*\",alertstate=\"firing\"}) by (alertname, severity)",
+          "legendFormat": "{{alertname}} ({{severity}})",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["gophprofile", "kubernetes", "cluster"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "GophProfile Kubernetes",
+  "uid": "gophprofile-k8s",
+  "version": 1
+}

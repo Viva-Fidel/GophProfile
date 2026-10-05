@@ -1,0 +1,76 @@
+replicaCount: 3
+
+image:
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  host: avatars.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 75
+
+config:
+  publicUrl: "https://avatars.example.com"
+  s3Endpoint: "minio.object-storage.svc.cluster.local:9000"
+  s3UseSSL: "true"
+  logLevel: "warn"
+  otelTracingEnabled: "true"
+
+secrets:
+  databaseUri: "postgres://gophprofile:CHANGE_ME@postgres.database.svc.cluster.local:5432/gophprofile?sslmode=require"
+  s3AccessKey: "CHANGE_ME"
+  s3SecretKey: "CHANGE_ME"
+  rabbitmqUri: "amqp://gophprofile:CHANGE_ME@rabbitmq.messaging.svc.cluster.local:5672/"
+
+serviceMonitor:
+  enabled: true
+
+prometheusRule:
+  enabled: true
+
+grafanaDashboard:
+  enabled: true
+
+worker:
+  enabled: true
+  replicaCount: 3
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 75
+
+networkPolicy:
+  enabled: true
+
+podSecurityPolicy:
+  enabled: true
+
+migrations:
+  enabled: true
+  backoffLimit: 1

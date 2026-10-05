@@ -1,0 +1,59 @@
+replicaCount: 2
+
+image:
+  tag: staging
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  host: avatars.staging.example.com
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+config:
+  publicUrl: "https://avatars.staging.example.com"
+  s3Endpoint: "minio.object-storage.svc.cluster.local:9000"
+  logLevel: "info"
+  otelTracingEnabled: "true"
+
+secrets:
+  databaseUri: "postgres://gophprofile:CHANGE_ME@postgres.database.svc.cluster.local:5432/gophprofile?sslmode=require"
+  s3AccessKey: "CHANGE_ME"
+  s3SecretKey: "CHANGE_ME"
+  rabbitmqUri: "amqp://gophprofile:CHANGE_ME@rabbitmq.messaging.svc.cluster.local:5672/"
+
+serviceMonitor:
+  enabled: true
+
+prometheusRule:
+  enabled: true
+
+grafanaDashboard:
+  enabled: true
+
+worker:
+  enabled: true
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+
+networkPolicy:
+  enabled: true
+
+podSecurityPolicy:
+  enabled: true

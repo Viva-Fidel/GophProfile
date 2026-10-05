@@ -1,0 +1,17 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-migrations
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": {{ .Values.migrations.hookWeight | quote }}
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+{{- range $path, $_ := .Files.Glob "files/migrations/*" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

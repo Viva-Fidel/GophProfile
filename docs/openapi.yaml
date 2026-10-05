@@ -1,0 +1,410 @@
+openapi: 3.0.3
+info:
+  title: GophProfile API
+  description: |
+    REST API сервиса аватарок GophProfile.
+    Аутентификация пользователя передаётся заголовком `X-User-ID`.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local
+  - url: https://avatars.example.com
+    description: Production
+
+tags:
+  - name: avatars
+    description: Управление аватарками
+  - name: health
+    description: Проверка работоспособности
+  - name: observability
+    description: Метрики
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Healthcheck зависимостей
+      operationId: getHealth
+      responses:
+        "200":
+          description: Все компоненты доступны
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReport"
+        "503":
+          description: Один или несколько компонентов недоступны
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReport"
+
+  /metrics:
+    get:
+      tags: [observability]
+      summary: Prometheus metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Метрики в формате Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/avatars:
+    post:
+      tags: [avatars]
+      summary: Загрузить аватарку
+      operationId: uploadAvatar
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: JPEG, PNG или WebP, максимум 10 MiB
+                image:
+                  type: string
+                  format: binary
+                  description: Альтернативное имя поля файла
+      responses:
+        "201":
+          description: Аватарка создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/avatars/{avatar_id}:
+    get:
+      tags: [avatars]
+      summary: Получить файл аватарки
+      operationId: getAvatarFile
+      parameters:
+        - $ref: "#/components/parameters/AvatarID"
+        - $ref: "#/components/parameters/Size"
+        - $ref: "#/components/parameters/Format"
+        - name: If-None-Match
+          in: header
+          schema:
+            type: string
+          description: ETag для условного запроса
+      responses:
+        "200":
+          description: Бинарные данные изображения
+          headers:
+            ETag:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "304":
+          description: Не изменено (ETag совпал)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [avatars]
+      summary: Удалить аватарку по id
+      operationId: deleteAvatar
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+        - $ref: "#/components/parameters/AvatarID"
+      responses:
+        "204":
+          description: Удалено
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/avatars/{avatar_id}/metadata:
+    get:
+      tags: [avatars]
+      summary: Метаданные аватарки
+      operationId: getAvatarMetadata
+      parameters:
+        - $ref: "#/components/parameters/AvatarID"
+      responses:
+        "200":
+          description: Метаданные
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetadataResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/users/{user_id}/avatar:
+    get:
+      tags: [avatars]
+      summary: Последняя аватарка пользователя
+      operationId: getUserAvatar
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/Size"
+        - $ref: "#/components/parameters/Format"
+      responses:
+        "200":
+          description: Бинарные данные изображения
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [avatars]
+      summary: Удалить текущую аватарку пользователя
+      operationId: deleteUserAvatar
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "204":
+          description: Удалено
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/users/{user_id}/avatars:
+    get:
+      tags: [avatars]
+      summary: Список аватарок пользователя
+      operationId: listUserAvatars
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+      responses:
+        "200":
+          description: Список метаданных
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MetadataResponse"
+
+components:
+  parameters:
+    XUserID:
+      name: X-User-ID
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Идентификатор пользователя-актора
+    AvatarID:
+      name: avatar_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserID:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+    Size:
+      name: size
+      in: query
+      schema:
+        type: string
+        enum: ["100x100", "300x300", "original"]
+        default: original
+      description: Размер миниатюры
+    Format:
+      name: format
+      in: query
+      schema:
+        type: string
+        enum: [jpeg, png]
+      description: Конвертация формата на лету
+
+  schemas:
+    HealthReport:
+      type: object
+      required: [status, components]
+      properties:
+        status:
+          type: string
+          enum: [ok, fail]
+        components:
+          type: object
+          properties:
+            postgres:
+              type: string
+              enum: [ok, fail]
+            s3:
+              type: string
+              enum: [ok, fail]
+            rabbitmq:
+              type: string
+              enum: [ok, fail]
+
+    UploadResponse:
+      type: object
+      required: [id, user_id, url, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Dimensions:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+
+    ThumbnailDTO:
+      type: object
+      properties:
+        size:
+          type: string
+          example: "100x100"
+        url:
+          type: string
+          format: uri
+
+    MetadataResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        file_name:
+          type: string
+        mime_type:
+          type: string
+        size:
+          type: integer
+          format: int64
+        dimensions:
+          $ref: "#/components/schemas/Dimensions"
+        thumbnails:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThumbnailDTO"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+        max_size:
+          type: integer
+          format: int64
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Аватарка не найдена
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Нет прав на операцию
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooLarge:
+      description: Файл больше 10 MiB
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: Превышен rate limit (`RATE_LIMIT_RPS`)
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: Circuit breaker открыт или зависимость недоступна
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Внутренняя ошибка
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

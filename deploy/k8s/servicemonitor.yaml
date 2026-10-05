@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gophprofile
+  labels:
+    app: gophprofile
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: gophprofile
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
