@@ -1,0 +1,10 @@
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}
+{{- else }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "gophprofile.name" . }},app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=server" -o jsonpath="{.items[0].metadata.name}")
+  kubectl port-forward $POD_NAME 8080:8080 --namespace {{ .Release.Namespace }}
+{{- end }}
+
+2. Components deployed: server + worker (metrics on :9091).
+3. Monitoring: ServiceMonitor, PrometheusRule alerts, Grafana dashboard ConfigMap (label grafana_dashboard=1).

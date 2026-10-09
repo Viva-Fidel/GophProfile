@@ -9,10 +9,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o worker ./cmd/worker
 
 # Runtime stage
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates tzdata
-WORKDIR /root/
-COPY --from=builder /app/server .
-COPY --from=builder /app/worker .
-COPY --from=builder /app/web ./web
-COPY --from=builder /app/migrations ./migrations
+RUN apk --no-cache add ca-certificates tzdata \
+    && adduser -D -u 1000 -g 1000 app
+WORKDIR /app
+COPY --from=builder --chown=app:app /app/server .
+COPY --from=builder --chown=app:app /app/worker .
+COPY --from=builder --chown=app:app /app/web ./web
+COPY --from=builder --chown=app:app /app/migrations ./migrations
+USER app
+STOPSIGNAL SIGTERM
 CMD ["./server"]

@@ -16,16 +16,39 @@ import (
 
 // Server — HTTP API и раздача веб-интерфейса.
 type Server struct {
-	avatars *handlers.AvatarHandler
-	health  *handlers.HealthHandler
-	webDir  string
-	logger  *slog.Logger
-	metrics *observability.Metrics
+	avatars        *handlers.AvatarHandler
+	health         *handlers.HealthHandler
+	webDir         string
+	logger         *slog.Logger
+	metrics        *observability.Metrics
+	rateLimitRPS   float64
+	rateLimitBurst int
+}
+
+// Option настраивает Server при создании.
+type Option func(*Server)
+
+// WithRateLimit задаёт per-client rate limit (rps<=0 отключает).
+func WithRateLimit(rps float64, burst int) Option {
+	return func(s *Server) {
+		s.rateLimitRPS = rps
+		s.rateLimitBurst = burst
+	}
 }
 
 // New создаёт HTTP-сервер.
-func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string, logger *slog.Logger, metrics *observability.Metrics) *Server {
-	return &Server{avatars: avatars, health: health, webDir: webDir, logger: logger, metrics: metrics}
+func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string, logger *slog.Logger, metrics *observability.Metrics, opts ...Option) *Server {
+	s := &Server{
+		avatars: avatars,
+		health:  health,
+		webDir:  webDir,
+		logger:  logger,
+		metrics: metrics,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type responseWriter struct {
@@ -65,6 +88,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/health", s.health.Get)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(RateLimit(s.rateLimitRPS, s.rateLimitBurst))
 		r.Post("/avatars", s.avatars.Upload)
 		r.Get("/avatars/{avatar_id}", s.avatars.Get)
 		r.Get("/avatars/{avatar_id}/metadata", s.avatars.GetMetadata)

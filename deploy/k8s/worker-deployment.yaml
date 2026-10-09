@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gophprofile-worker
+  labels:
+    app: gophprofile-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gophprofile-worker
+  template:
+    metadata:
+      labels:
+        app: gophprofile-worker
+    spec:
+      serviceAccountName: gophprofile
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: worker
+        image: gophprofile:latest
+        imagePullPolicy: IfNotPresent
+        command: ["./worker"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: metrics
+          containerPort: 9091
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        env:
+        - name: METRICS_ADDRESS
+          value: ":9091"
+        - name: S3_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_endpoint
+        - name: S3_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_bucket
+        - name: S3_USE_SSL
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_use_ssl
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: log_level
+        - name: OTEL_SERVICE_NAME
+          value: gophprofile-worker
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_exporter_otlp_endpoint
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_exporter_otlp_insecure
+        - name: OTEL_TRACING_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_tracing_enabled
+        - name: DATABASE_URI
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: database-uri
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: s3-access-key
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: s3-secret-key
+        - name: RABBITMQ_URI
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: rabbitmq-uri
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: metrics
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: metrics
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+      volumes:
+      - name: tmp
+        emptyDir: {}

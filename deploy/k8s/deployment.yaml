@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gophprofile
+  labels:
+    app: gophprofile
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gophprofile
+  template:
+    metadata:
+      labels:
+        app: gophprofile
+    spec:
+      serviceAccountName: gophprofile
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: server
+        image: gophprofile:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: http
+          containerPort: 8080
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        env:
+        - name: RUN_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: run_address
+        - name: PUBLIC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: public_url
+        - name: S3_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_endpoint
+        - name: S3_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_bucket
+        - name: S3_USE_SSL
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: s3_use_ssl
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: log_level
+        - name: OTEL_SERVICE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_service_name
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_exporter_otlp_endpoint
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_exporter_otlp_insecure
+        - name: OTEL_TRACING_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: otel_tracing_enabled
+        - name: RATE_LIMIT_RPS
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: rate_limit_rps
+        - name: RATE_LIMIT_BURST
+          valueFrom:
+            configMapKeyRef:
+              name: gophprofile-config
+              key: rate_limit_burst
+        - name: DATABASE_URI
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: database-uri
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: s3-access-key
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: s3-secret-key
+        - name: RABBITMQ_URI
+          valueFrom:
+            secretKeyRef:
+              name: gophprofile-secrets
+              key: rabbitmq-uri
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+      volumes:
+      - name: tmp
+        emptyDir: {}

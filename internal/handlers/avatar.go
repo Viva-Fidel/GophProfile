@@ -15,6 +15,7 @@ import (
 
 	"gophprofile/internal/domain"
 	"gophprofile/internal/imageutil"
+	"gophprofile/pkg/circuitbreaker"
 )
 
 // AvatarService — контракт сервиса аватарок для HTTP-обработчика.
@@ -195,6 +196,8 @@ func (h *AvatarHandler) writeServiceError(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, errorBody("Invalid size", `Supported sizes: "100x100", "300x300", "original"`))
 	case errors.Is(err, domain.ErrInvalidFormatParam):
 		writeJSON(w, http.StatusBadRequest, errorBody("Invalid format", `Supported formats: jpeg, png`))
+	case errors.Is(err, circuitbreaker.ErrOpen):
+		writeJSON(w, http.StatusServiceUnavailable, errorBody("Service temporarily unavailable", "Dependency circuit breaker is open"))
 	default:
 		h.logger.ErrorContext(r.Context(), "avatar handler", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, errorBody("Internal server error", ""))

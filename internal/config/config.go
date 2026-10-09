@@ -21,8 +21,10 @@ type Config struct {
 
 // ServerConfig описывает сетевые параметры сервера.
 type ServerConfig struct {
-	Address   string `env:"RUN_ADDRESS" envDefault:":8080"`
-	PublicURL string `env:"PUBLIC_URL" envDefault:"http://localhost:8080"`
+	Address        string  `env:"RUN_ADDRESS" envDefault:":8080"`
+	PublicURL      string  `env:"PUBLIC_URL" envDefault:"http://localhost:8080"`
+	RateLimitRPS   float64 `env:"RATE_LIMIT_RPS" envDefault:"100"`
+	RateLimitBurst int     `env:"RATE_LIMIT_BURST" envDefault:"200"`
 }
 
 // DBConfig описывает подключение к PostgreSQL.
@@ -71,6 +73,8 @@ type Flags struct {
 	TracingEnabled bool
 	MetricsAddress string
 	LogLevel       string
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 // loadConfig читает конфигурацию из переменных окружения.
@@ -100,6 +104,8 @@ func parseFlags(conf *Config, fs *flag.FlagSet, args []string) (*Flags, error) {
 		TracingEnabled: conf.Observability.TracingEnabled,
 		MetricsAddress: conf.Observability.MetricsAddress,
 		LogLevel:       conf.Observability.LogLevel,
+		RateLimitRPS:   conf.Server.RateLimitRPS,
+		RateLimitBurst: conf.Server.RateLimitBurst,
 	}
 
 	fs.StringVar(&flags.RunAddress, "a", flags.RunAddress, "service run address")

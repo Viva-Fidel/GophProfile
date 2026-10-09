@@ -1,0 +1,204 @@
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 3
+
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
+image:
+  repository: gophprofile
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: avatars.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+config:
+  runAddress: ":8080"
+  publicUrl: "https://avatars.example.com"
+  s3Endpoint: "minio:9000"
+  s3Bucket: "avatars"
+  s3UseSSL: "false"
+  logLevel: "info"
+  otelServiceName: "gophprofile-server"
+  otelExporterOtlpEndpoint: "otel-collector:4317"
+  otelExporterOtlpInsecure: "true"
+  otelTracingEnabled: "true"
+  maxFileSize: "10485760"
+  allowedMimeTypes: "image/jpeg,image/png,image/webp"
+  rateLimitRPS: "100"
+  rateLimitBurst: "200"
+
+secrets:
+  # Plaintext values converted to stringData by the Secret template.
+  # Override via --set or environment-specific values files / sealed-secrets.
+  databaseUri: "postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable"
+  s3AccessKey: "minioadmin"
+  s3SecretKey: "minioadmin"
+  rabbitmqUri: "amqp://guest:guest@rabbitmq:5672/"
+
+worker:
+  enabled: true
+  replicaCount: 2
+  metricsPort: 9091
+  otelServiceName: "gophprofile-worker"
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  probes:
+    liveness:
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+      successThreshold: 1
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  networkPolicy:
+    ingress:
+      - namespaceLabels:
+          name: monitoring
+        port: 9091
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+  labels:
+    release: prometheus
+
+prometheusRule:
+  enabled: true
+  labels:
+    release: prometheus
+  thresholds:
+    errorRate: 0.05
+    latencyP95Seconds: 1
+    queueDepth: 1000
+
+grafanaDashboard:
+  enabled: true
+  labels: {}
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - namespaceLabels:
+        name: ingress-nginx
+      port: 8080
+    - namespaceLabels:
+        name: monitoring
+      port: 8080
+  egress:
+    - namespaceLabels:
+        name: database
+      port: 5432
+      protocol: TCP
+    - namespaceLabels:
+        name: object-storage
+      port: 9000
+      protocol: TCP
+    - namespaceLabels:
+        name: messaging
+      port: 5672
+      protocol: TCP
+    - namespaceLabels:
+        name: observability
+      port: 4317
+      protocol: TCP
+    - namespaceLabels:
+        name: kube-system
+      port: 53
+      protocol: UDP
+    - namespaceLabels:
+        name: kube-system
+      port: 53
+      protocol: TCP
+
+podSecurityPolicy:
+  enabled: true
+
+rbac:
+  create: true
+
+migrations:
+  enabled: true
+  image:
+    repository: migrate/migrate
+    tag: "v4.18.1"
+    pullPolicy: IfNotPresent
+  backoffLimit: 3
+  hookWeight: "-5"

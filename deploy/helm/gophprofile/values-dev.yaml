@@ -1,0 +1,53 @@
+replicaCount: 1
+
+image:
+  tag: latest
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  host: avatars.dev.example.com
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "50m"
+  limits:
+    memory: "256Mi"
+    cpu: "250m"
+
+autoscaling:
+  enabled: false
+
+config:
+  publicUrl: "https://avatars.dev.example.com"
+  s3Endpoint: "minio.object-storage.svc.cluster.local:9000"
+  logLevel: "debug"
+  otelTracingEnabled: "false"
+
+secrets:
+  databaseUri: "postgres://gophprofile:gophprofile@postgres.database.svc.cluster.local:5432/gophprofile?sslmode=disable"
+  s3AccessKey: "minioadmin"
+  s3SecretKey: "minioadmin"
+  rabbitmqUri: "amqp://guest:guest@rabbitmq.messaging.svc.cluster.local:5672/"
+
+serviceMonitor:
+  enabled: false
+
+prometheusRule:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false
+
+worker:
+  enabled: true
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+
+networkPolicy:
+  enabled: false
+
+podSecurityPolicy:
+  enabled: false

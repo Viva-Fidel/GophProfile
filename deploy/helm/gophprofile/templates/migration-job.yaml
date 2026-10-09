@@ -1,0 +1,46 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-migrate
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "gophprofile.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: migrate
+        image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+        imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        args:
+        - "-path=/migrations"
+        - "-database={{ .Values.secrets.databaseUri }}"
+        - "up"
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: migrations
+        configMap:
+          name: {{ include "gophprofile.fullname" . }}-migrations
+      - name: tmp
+        emptyDir: {}
+{{- end }}
