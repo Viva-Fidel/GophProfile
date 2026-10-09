@@ -25,17 +25,30 @@ type Server struct {
 	rateLimitBurst int
 }
 
-// New создаёт HTTP-сервер.
-func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string, logger *slog.Logger, metrics *observability.Metrics, rateLimitRPS float64, rateLimitBurst int) *Server {
-	return &Server{
-		avatars:        avatars,
-		health:         health,
-		webDir:         webDir,
-		logger:         logger,
-		metrics:        metrics,
-		rateLimitRPS:   rateLimitRPS,
-		rateLimitBurst: rateLimitBurst,
+// Option настраивает Server при создании.
+type Option func(*Server)
+
+// WithRateLimit задаёт per-client rate limit (rps<=0 отключает).
+func WithRateLimit(rps float64, burst int) Option {
+	return func(s *Server) {
+		s.rateLimitRPS = rps
+		s.rateLimitBurst = burst
 	}
+}
+
+// New создаёт HTTP-сервер.
+func New(avatars *handlers.AvatarHandler, health *handlers.HealthHandler, webDir string, logger *slog.Logger, metrics *observability.Metrics, opts ...Option) *Server {
+	s := &Server{
+		avatars: avatars,
+		health:  health,
+		webDir:  webDir,
+		logger:  logger,
+		metrics: metrics,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type responseWriter struct {

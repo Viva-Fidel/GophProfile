@@ -33,11 +33,12 @@ func (r *BreakingRabbit) Consume(ctx context.Context, queue string, handler func
 		return err
 	}
 	err := r.inner.Consume(ctx, queue, handler)
-	if err != nil && !errors.Is(err, context.Canceled) {
+	failed := err != nil && !errors.Is(err, context.Canceled)
+	if failed {
 		r.cb.Failure()
-		return err
+	} else {
+		r.cb.Success()
 	}
-	r.cb.Success()
 	return err
 }
 

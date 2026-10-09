@@ -127,8 +127,7 @@ func run(ctx context.Context, conf *config.Flags, logger *slog.Logger) error {
 		"web",
 		logger.With("component", "httpserver"),
 		metrics,
-		conf.RateLimitRPS,
-		conf.RateLimitBurst,
+		httpserver.WithRateLimit(conf.RateLimitRPS, conf.RateLimitBurst),
 	).Router()
 
 	ln, err := net.Listen("tcp", conf.RunAddress)
